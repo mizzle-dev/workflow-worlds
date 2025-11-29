@@ -38,6 +38,11 @@ A World consists of these core components:
    - 404 for not found
    - 409 for conflicts/version mismatches
    - 400 for bad requests
+6. **Environment Variables**: All env vars MUST:
+   - Be prefixed with `WORKFLOW_`
+   - Use `URI` not `URL` for connection strings (e.g., `WORKFLOW_MONGODB_URI`)
+   - Follow priority: config > env var > default
+   - Make all configuration options settable via env vars where practical
 
 ## Your Workflow Process
 

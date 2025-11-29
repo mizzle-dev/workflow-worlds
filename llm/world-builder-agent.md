@@ -138,6 +138,39 @@ The @workflow/world-testing package has 5 tests:
 | Hook metadata corrupted | Core mutates returned objects | Deep clone all storage returns |
 | Generic 500 errors | Using plain Error | Use `WorkflowAPIError` with proper status codes |
 
+## Environment Variable Conventions
+
+All World implementations MUST follow these conventions:
+
+### Naming Rules
+1. **Prefix with `WORKFLOW_`**: All env vars must start with `WORKFLOW_`
+2. **Use `URI` not `URL`**: For connection strings (e.g., `WORKFLOW_MONGODB_URI`)
+3. **Use SCREAMING_SNAKE_CASE**: Standard naming convention
+
+### Configuration Priority
+```typescript
+// Always: config > env var > default
+const mongoUri = config.mongoUrl
+  ?? process.env.WORKFLOW_MONGODB_URI
+  ?? 'mongodb://localhost:27017';
+```
+
+### Making Options Configurable
+All configuration options should be settable via environment variables:
+
+```typescript
+// Boolean options
+const useFeature = config.useFeature
+  ?? (process.env.WORKFLOW_MY_FEATURE !== undefined
+    ? process.env.WORKFLOW_MY_FEATURE === 'true'
+    : true);
+
+// String options
+const databaseName = config.databaseName
+  ?? process.env.WORKFLOW_DATABASE_NAME
+  ?? 'workflow';
+```
+
 ## When Stuck
 
 1. Add console.log to trace execution
@@ -192,21 +225,27 @@ const result = await agent.run({
 
 ```typescript
 // Dependencies
-"mongoose": "^8.0.0",
-"agenda": "^5.0.0",
+"mongodb": "^6.0.0",
+"ulid": "^2.3.0",
+
+// Environment Variables (WORKFLOW_ prefix required)
+process.env.WORKFLOW_MONGODB_URI        // Connection string
+process.env.WORKFLOW_MONGODB_CHANGE_STREAMS  // 'true' or 'false'
 
 // Collections
-- workflow_runs
-- workflow_steps
-- workflow_events (with correlation_id index)
-- workflow_hooks (with token index)
-- workflow_stream_chunks
+- runs
+- steps
+- events (with correlationId index)
+- hooks (with token index)
+- stream_chunks
+- queue_messages (with TTL index for idempotency)
 
-// Queue: Use Agenda
-const agenda = new Agenda({ db: { address: mongoUri } });
+// Queue: Use TTL-based deduplication
+await collection.createIndex({ idempotencyKey: 1 }, { unique: true });
+await collection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
-// Streaming: Use Change Streams
-collection.watch([{ $match: { 'fullDocument.streamId': name } }]);
+// Streaming: Use Change Streams (optional, requires replica set)
+collection.watch([{ $match: { 'fullDocument.streamName': name } }]);
 ```
 
 ### Redis + BullMQ

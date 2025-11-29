@@ -295,7 +295,7 @@ let container: Awaited<ReturnType<MongoDBContainer['start']>>;
 
 beforeAll(async () => {
   container = await new MongoDBContainer('mongo:7').start();
-  process.env.MONGODB_URL = container.getConnectionString();
+  process.env.WORKFLOW_MONGODB_URI = container.getConnectionString() + '?directConnection=true';
 }, 120_000);
 
 afterAll(async () => {

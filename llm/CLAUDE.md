@@ -154,6 +154,29 @@ Five test suites:
 5. **Not handling runId as Promise** - Streamer methods accept `Promise<string>`
 6. **Missing idempotency handling** - Queue must prevent duplicates
 7. **Using plain Error** - Use `WorkflowAPIError` with proper status codes
+8. **Wrong env var naming** - Must use `WORKFLOW_` prefix and `URI` not `URL`
+
+## Environment Variable Conventions
+
+All World implementations MUST follow these conventions:
+
+1. **Prefix with `WORKFLOW_`**: All env vars must start with `WORKFLOW_`
+2. **Use `URI` not `URL`**: For connection strings (e.g., `WORKFLOW_MONGODB_URI`)
+3. **Priority**: config > env var > default
+4. **Make configurable**: All options should be settable via env vars
+
+```typescript
+// Connection string
+const mongoUri = config.mongoUrl
+  ?? process.env.WORKFLOW_MONGODB_URI
+  ?? 'mongodb://localhost:27017';
+
+// Boolean option
+const useFeature = config.useFeature
+  ?? (process.env.WORKFLOW_MY_FEATURE !== undefined
+    ? process.env.WORKFLOW_MY_FEATURE === 'true'
+    : true);
+```
 
 ## Starter Template
 

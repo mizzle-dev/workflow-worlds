@@ -224,3 +224,57 @@ Before considering implementation complete:
 - [ ] Idempotency keys handled
 - [ ] Connection pooling configured (if applicable)
 - [ ] WorkflowAPIError used with proper status codes
+- [ ] Environment variables follow `WORKFLOW_` prefix convention
+
+## Environment Variable Conventions
+
+All World implementations should follow these conventions for environment variables:
+
+### Naming Convention
+
+1. **Prefix with `WORKFLOW_`**: All environment variables should start with `WORKFLOW_`
+2. **Use `URI` not `URL`**: For connection strings, use `URI` (e.g., `WORKFLOW_MONGODB_URI` not `WORKFLOW_MONGODB_URL`)
+3. **Use SCREAMING_SNAKE_CASE**: Standard env var naming convention
+
+### Required Pattern
+
+```typescript
+// Priority: config > env var > default
+const mongoUri = config.mongoUrl
+  ?? process.env.WORKFLOW_MONGODB_URI
+  ?? process.env.MONGODB_URL  // Legacy fallback (optional)
+  ?? 'mongodb://localhost:27017';
+```
+
+### Common Environment Variables
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `WORKFLOW_TARGET_WORLD` | Path to World module | `./dist/index.js` |
+| `WORKFLOW_POSTGRES_URL` | PostgreSQL connection | `postgres://...` |
+| `WORKFLOW_MONGODB_URI` | MongoDB connection | `mongodb://...` |
+| `WORKFLOW_REDIS_URL` | Redis connection | `redis://...` |
+| `WORKFLOW_MONGODB_CHANGE_STREAMS` | Enable/disable change streams | `true` or `false` |
+
+### Making Options Configurable
+
+All configuration options should be settable via environment variables where practical:
+
+```typescript
+// Boolean options
+const useFeature = config.useFeature
+  ?? (process.env.WORKFLOW_MY_FEATURE !== undefined
+    ? process.env.WORKFLOW_MY_FEATURE === 'true'
+    : true);  // default value
+
+// String options
+const databaseName = config.databaseName
+  ?? process.env.WORKFLOW_DATABASE_NAME
+  ?? 'workflow';
+
+// Number options
+const timeout = config.timeout
+  ?? (process.env.WORKFLOW_TIMEOUT
+    ? parseInt(process.env.WORKFLOW_TIMEOUT, 10)
+    : 5000);
+```

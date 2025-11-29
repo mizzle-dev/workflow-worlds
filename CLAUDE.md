@@ -93,6 +93,28 @@ throw new WorkflowAPIError(`Duplicate token`, { status: 409 });
 
 Plain `Error` results in 500; only `WorkflowAPIError` propagates proper status codes.
 
+### Environment Variables
+
+All World implementations must follow these conventions:
+
+1. **Prefix with `WORKFLOW_`**: All env vars must start with `WORKFLOW_`
+2. **Use `URI` not `URL`**: For connection strings (e.g., `WORKFLOW_MONGODB_URI`)
+3. **Priority**: config > env var > default
+4. **Make configurable**: All options should be settable via env vars where practical
+
+```typescript
+// Connection string example
+const mongoUri = config.mongoUrl
+  ?? process.env.WORKFLOW_MONGODB_URI
+  ?? 'mongodb://localhost:27017';
+
+// Boolean option example
+const useFeature = config.useFeature
+  ?? (process.env.WORKFLOW_MY_FEATURE !== undefined
+    ? process.env.WORKFLOW_MY_FEATURE === 'true'
+    : true);
+```
+
 ## Building a New World
 
 1. Copy starter: `cp -r packages/starter packages/{backend}`
