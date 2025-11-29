@@ -1,59 +1,124 @@
-# workflow-worlds
+# CLAUDE.md
 
-Repository for building custom World implementations for the Workflow DevKit.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## For AI Agents
+## Overview
 
-### Quick Start
-1. User wants to build a new World → Copy `packages/starter/`
-2. User has a failing test → Check `docs/04-patterns-and-practices.md`
-3. User wants an example → Reference `packages/mongodb/` (if exists)
+Repository for building custom World implementations for the Workflow DevKit. A "World" provides three capabilities: Storage (persistence), Queue (async execution), and Streamer (real-time output).
 
-### Critical Files to Read First
-- `docs/04-patterns-and-practices.md` - Must-know patterns (deep cloning, TTL idempotency)
-- `packages/starter/src/storage.ts` - Storage implementation
-- `packages/starter/src/queue.ts` - Queue with TTL-based idempotency
-
-### Common Tasks
-
-| Task | Action |
-|------|--------|
-| "Build a Redis world" | Copy starter, implement with ioredis + BullMQ |
-| "Debug failing tests" | Check docs/05-testing.md, look at Common Errors table |
-| "Fix idempotency deadlock" | Use TTL-based dedup, not inflight tracking |
-
-### Key Gotchas
-1. **Deep cloning**: Use `structuredClone()`, not JSON.parse/stringify
-2. **Idempotency**: Use TTL-based deduplication, NOT inflight tracking
-3. **Event order**: Always return events in ascending order (oldest first)
-4. **Export**: `export default createWorld` (function), not `createWorld()`
-5. **Error handling**: Use `WorkflowAPIError` from `@workflow/errors` with proper status codes (404, 409)
-
-## Development
+## Commands
 
 ```bash
-# Install dependencies
-pnpm install
+pnpm install        # Install all dependencies
+pnpm build          # Build all packages
+pnpm test           # Run test suite (requires build first)
+pnpm typecheck      # TypeScript type checking
+pnpm clean          # Clean build artifacts
 
-# Build all packages
-pnpm build
-
-# Run tests
-pnpm test
+# Single package development
+cd packages/{name} && pnpm build && pnpm test
 ```
 
-## Repository Structure
+## Architecture
 
+### World Interface
+
+```typescript
+interface World extends Queue, Storage, Streamer {
+  start?(): Promise<void>;  // Optional initialization
+}
 ```
-workflow-worlds/
-├── docs/                    # Building worlds documentation
-├── llm/                     # AI/LLM-specific guides
-└── packages/
-    └── starter/             # Working in-memory World template
+
+- **Storage** - 4 namespaces: `runs`, `steps`, `events`, `hooks`
+- **Queue** - `getDeploymentId()`, `queue()`, `createQueueHandler()`
+- **Streamer** - `writeToStream()`, `closeStream()`, `readFromStream()`
+
+### Export Pattern
+
+```typescript
+// CORRECT - export the function
+export default createWorld;
+
+// WRONG - calling it
+export default createWorld();
 ```
 
-## More Documentation
+The runtime imports and calls this function via `WORKFLOW_TARGET_WORLD`.
 
-- `llm/AGENTS.md` - Agent-specific instructions for building Worlds
-- `llm/PROMPTS.md` - Ready-to-use prompts for common tasks
-- `llm/world-builder-agent.md` - Comprehensive world builder guide
+### ID Generation
+
+Use monotonic ULIDs with prefixes:
+```typescript
+import { monotonicFactory } from 'ulid';
+const generateUlid = monotonicFactory();
+
+const runId = `wrun_${generateUlid()}`;
+const stepId = `wstep_${generateUlid()}`;
+const eventId = `wevt_${generateUlid()}`;
+const hookId = `whook_${generateUlid()}`;
+```
+
+## Critical Patterns
+
+### Deep Cloning (In-Memory Only)
+
+Use `structuredClone()`, NOT `JSON.parse(JSON.stringify())`. The core mutates returned objects, and JSON serialization breaks Date objects.
+
+### TTL-Based Idempotency
+
+**Do NOT use inflight tracking** - it deadlocks workflows. Use TTL-based deduplication (5 seconds) to catch network retries only. Each step has a unique idempotency key, so workflow duration doesn't affect idempotency.
+
+### Event Ordering
+
+Events MUST be returned in ascending order (oldest first) for deterministic replay.
+
+### Timestamp Idempotency
+
+- `startedAt`: Set ONLY ONCE when status first becomes 'running'
+- `completedAt`: Set only when reaching terminal status
+
+### Hook Cleanup
+
+Delete all hooks when runs reach terminal status ('completed', 'failed', 'cancelled').
+
+### Error Handling
+
+Use `WorkflowAPIError` from `@workflow/errors`:
+```typescript
+import { WorkflowAPIError } from '@workflow/errors';
+
+throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
+throw new WorkflowAPIError(`Duplicate token`, { status: 409 });
+```
+
+Plain `Error` results in 500; only `WorkflowAPIError` propagates proper status codes.
+
+## Building a New World
+
+1. Copy starter: `cp -r packages/starter packages/{backend}`
+2. Update package.json name and add dependencies
+3. Run `pnpm build && pnpm test` to verify baseline
+4. Implement in order: runs → steps → events → hooks → queue → streamer
+5. Run tests after each component
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `docs/02-interface-reference.md` | Complete API documentation |
+| `docs/04-patterns-and-practices.md` | Critical patterns and gotchas |
+| `docs/05-testing.md` | Test suite details and common errors |
+| `packages/starter/src/storage.ts` | Reference storage implementation |
+| `packages/starter/src/queue.ts` | Reference queue with TTL idempotency |
+| `llm/AGENTS.md` | Detailed agent instructions |
+
+## Test Suites
+
+5 test suites from `@workflow/world-testing`:
+- **addition** - Basic workflow execution (12s)
+- **idempotency** - State reconstruction with 110 steps (30s)
+- **hooks** - Hook/resume mechanism (15s)
+- **errors** - Retry semantics (30s)
+- **nullByte** - Binary data handling
+
+All must pass before implementation is complete.
