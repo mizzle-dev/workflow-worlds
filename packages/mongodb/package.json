@@ -1,0 +1,48 @@
+{
+  "name": "@workflow-worlds/mongodb",
+  "version": "0.0.1",
+  "description": "MongoDB World implementation for Workflow DevKit",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "pnpm build && vitest run",
+    "test:only": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@workflow/errors": "4.0.1-beta.6",
+    "@workflow/world": "4.0.1-beta.7",
+    "@vercel/queue": "^0.0.0-alpha.29",
+    "mongodb": "^6.0.0",
+    "ulid": "^2.3.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@testcontainers/mongodb": "^10.0.0",
+    "@types/node": "^22.0.0",
+    "@workflow/world-testing": "4.0.1-beta.23",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "workflow",
+    "world",
+    "mongodb",
+    "durable-functions"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0"
+}
