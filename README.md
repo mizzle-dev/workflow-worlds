@@ -39,9 +39,11 @@ npm create @workflow-worlds my-world
 
 ## Packages
 
-| Package | Description |
-|---------|-------------|
-| [@workflow-worlds/starter](./packages/starter) | In-memory World template for building custom implementations |
+| Package | Description | Status |
+|---------|-------------|--------|
+| [@workflow-worlds/starter](./packages/starter) | In-memory World template for building custom implementations | ✅ Ready |
+| [@workflow-worlds/mongodb](./packages/mongodb) | MongoDB World using native driver | ✅ Ready |
+| [@workflow-worlds/redis](./packages/redis) | Redis World using BullMQ for queues, Redis Streams for output | ✅ Ready |
 
 ## Documentation
 
