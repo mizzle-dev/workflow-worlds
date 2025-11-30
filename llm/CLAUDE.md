@@ -52,11 +52,19 @@ interface World extends Queue, Storage, Streamer {
 4. **hooks** - Webhook registrations
    - `create`, `get`, `getByToken`, `list`, `dispose`
 
-### Queue (3 methods)
+### Queue (3 methods + lifecycle)
 
 - `getDeploymentId()` - Return deployment identifier
 - `queue()` - Enqueue messages with idempotency
 - `createQueueHandler()` - Create HTTP handler for processing
+- `start()` - Start processing messages (called by runtime)
+
+**Production queues should have:**
+- Persistent message storage (survives restarts)
+- Lock management with token verification
+- Exponential backoff with jitter
+- Graceful shutdown with in-flight tracking
+- Stuck message recovery
 
 ### Streamer (3 methods)
 
@@ -155,6 +163,8 @@ Five test suites:
 6. **Missing idempotency handling** - Queue must prevent duplicates
 7. **Using plain Error** - Use `WorkflowAPIError` with proper status codes
 8. **Wrong env var naming** - Must use `WORKFLOW_` prefix and `URI` not `URL`
+9. **Weak queue implementation** - Production needs: persistent storage, lock tokens, backoff, graceful shutdown
+10. **Check-then-insert for idempotency** - Race condition; use atomic upsert instead
 
 ## Environment Variable Conventions
 
@@ -178,12 +188,117 @@ const useFeature = config.useFeature
     : true);
 ```
 
+## Robust Queue Implementation
+
+For production worlds, implement a robust queue with these patterns:
+
+### Message Schema
+```typescript
+interface QueueMessage {
+  messageId: string;
+  queueName: string;
+  payload: Buffer;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  attempt: number;
+  maxRetries: number;
+  scheduledFor: Date;        // When eligible for processing
+  lockedUntil?: Date;        // Lock expiration
+  lockToken?: string;        // Ownership verification
+  idempotencyKey?: string;
+  lastError?: { message: string; status?: number; timestamp: Date };
+}
+```
+
+### Atomic Idempotency
+Use upsert, NOT check-then-insert:
+```typescript
+// GOOD: Atomic upsert
+const result = await messages.findOneAndUpdate(
+  { idempotencyKey, createdAt: { $gt: cutoff } },
+  { $setOnInsert: { /* new message */ }, $set: { updatedAt: now } },
+  { upsert: true, returnDocument: 'after' }
+);
+
+// BAD: Race condition
+const existing = await messages.findOne({ idempotencyKey });
+if (!existing) await messages.insertOne({ /* ... */ });
+```
+
+### Lock Management
+```typescript
+// Acquire lock with unique token
+const lockToken = generateUlid();
+await messages.findOneAndUpdate(
+  { messageId, status: 'pending' },
+  { $set: { status: 'processing', lockToken, lockedUntil: expiry } }
+);
+
+// Verify lock before completion (prevents duplicate processing)
+await messages.updateOne(
+  { messageId, lockToken, status: 'processing', lockedUntil: { $gt: now } },
+  { $set: { status: 'completed' } }
+);
+```
+
+### Exponential Backoff with Jitter
+```typescript
+function calculateDelay(attempt: number): number {
+  const delay = Math.min(1000 * Math.pow(2, attempt - 1), 60000);
+  const jitter = delay * 0.2 * (Math.random() * 2 - 1);
+  return Math.round(delay + jitter);
+}
+```
+
+### 503 with timeoutSeconds
+Handle Workflow DevKit's retry signal:
+```typescript
+if (response.status === 503) {
+  const { timeoutSeconds } = await response.json();
+  if (typeof timeoutSeconds === 'number') {
+    // Reschedule without incrementing attempt
+    await rescheduleMessage(messageId, lockToken, timeoutSeconds);
+    return;
+  }
+}
+```
+
+### Graceful Shutdown
+```typescript
+async close() {
+  state.isShuttingDown = true;
+  await watcher.stop();
+
+  // Wait for in-flight with timeout
+  const deadline = Date.now() + 30000;
+  while (inflightMessages.size > 0 && Date.now() < deadline) {
+    await sleep(100);
+  }
+
+  // Release locks for remaining
+  for (const [id, ctx] of inflightMessages) {
+    ctx.abortController.abort();
+    await releaseLock(id, ctx.lockToken);
+  }
+}
+```
+
+### Stuck Message Recovery
+```typescript
+// On start() and periodically:
+await messages.updateMany(
+  { status: 'processing', lockedUntil: { $lt: new Date() } },
+  { $set: { status: 'pending' }, $unset: { lockToken: '', lockedUntil: '' } }
+);
+```
+
 ## Starter Template
 
 Use `packages/starter/` as your starting point. It has:
 - Complete in-memory implementation that passes all tests
 - TODO markers for each replacement point
 - Proper error handling with WorkflowAPIError
+
+For production reference, see `packages/mongodb/` which implements the robust queue patterns above.
 
 ## When Asked to Build a World
 

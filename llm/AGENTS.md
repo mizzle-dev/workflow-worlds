@@ -80,14 +80,71 @@ Replace setTimeout with actual queue:
 src/queue.ts
 ├── getDeploymentId(): Return deployment identifier
 ├── queue(): Enqueue with idempotency key
-└── createQueueHandler(): HTTP handler for processing
+├── createQueueHandler(): HTTP handler for processing
+├── start(): Begin processing messages
+└── close(): Graceful shutdown
 ```
+
+**For production worlds, implement a robust queue:**
+
+1. **Persistent Message Storage**
+   ```typescript
+   interface QueueMessage {
+     messageId: string;
+     queueName: string;
+     payload: Buffer;
+     status: 'pending' | 'processing' | 'completed' | 'failed';
+     attempt: number;
+     maxRetries: number;
+     scheduledFor: Date;
+     lockedUntil?: Date;
+     lockToken?: string;
+     idempotencyKey?: string;
+     lastError?: { message: string; status?: number; timestamp: Date };
+   }
+   ```
+
+2. **Atomic Idempotency** - Use upsert, NOT check-then-insert:
+   ```typescript
+   // GOOD
+   await messages.findOneAndUpdate(
+     { idempotencyKey, createdAt: { $gt: cutoff } },
+     { $setOnInsert: { /* message */ }, $set: { updatedAt: now } },
+     { upsert: true }
+   );
+   // BAD - race condition
+   if (!await messages.findOne({ idempotencyKey })) { await messages.insertOne(...) }
+   ```
+
+3. **Lock Management with Token Verification**
+   - Generate unique lockToken when acquiring
+   - Verify lockToken before marking complete
+   - Prevents duplicate processing after lock expiry
+
+4. **Exponential Backoff with Jitter**
+   ```typescript
+   const delay = Math.min(1000 * Math.pow(2, attempt - 1), 60000);
+   const jitter = delay * 0.2 * (Math.random() * 2 - 1);
+   ```
+
+5. **503 with timeoutSeconds Handling**
+   - Reschedule without incrementing attempt counter
+   - Use provided delay, not backoff calculation
+
+6. **Graceful Shutdown**
+   - Track in-flight messages with AbortController
+   - Wait for completion (with timeout)
+   - Release locks for remaining messages
+
+7. **Stuck Message Recovery**
+   - On start(): reset messages with expired locks
+   - Periodically (e.g., every 60s): recover stuck processing messages
+
+**Reference:** See `packages/mongodb/src/queue.ts` for complete implementation.
 
 Key patterns:
 - Use `@vercel/queue` JsonTransport for serialization
-- Implement idempotency: TTL-based for in-memory, database-level for distributed (see docs/04-patterns-and-practices.md)
 - **Warning**: Don't use inflight tracking that blocks until processing completes - it deadlocks workflows
-- Handle retry via 503 response with timeoutSeconds
 
 #### 3.3 Streamer Implementation
 
@@ -213,6 +270,7 @@ interface StructuredError {
 
 Before considering implementation complete:
 
+### Storage
 - [ ] All 5 test suites pass
 - [ ] ULID prefixes used correctly (wrun_, wstep_, wevt_, whook_)
 - [ ] startedAt set only once
@@ -221,10 +279,21 @@ Before considering implementation complete:
 - [ ] Events returned in ascending order
 - [ ] Pagination uses cursor (not offset)
 - [ ] resolveData filtering implemented
-- [ ] Idempotency keys handled
-- [ ] Connection pooling configured (if applicable)
 - [ ] WorkflowAPIError used with proper status codes
+
+### Queue (Production)
+- [ ] Messages persisted to database (survive restarts)
+- [ ] Atomic idempotency (upsert, not check-then-insert)
+- [ ] Lock tokens verified before completion
+- [ ] Exponential backoff with jitter on failures
+- [ ] 503 + timeoutSeconds handled (reschedule without attempt increment)
+- [ ] Graceful shutdown waits for in-flight messages
+- [ ] Stuck message recovery on start() and periodically
+- [ ] Connection pooling/caching configured
+
+### General
 - [ ] Environment variables follow `WORKFLOW_` prefix convention
+- [ ] Config > env var > default priority respected
 
 ## Environment Variable Conventions
 

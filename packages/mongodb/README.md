@@ -5,9 +5,9 @@ A complete MongoDB-backed World implementation for the Workflow DevKit.
 ## Features
 
 - **Storage**: Uses MongoDB collections for runs, steps, events, and hooks
-- **Queue**: TTL-based idempotency tracking with MongoDB
+- **Queue**: Production-ready with persistent messages, exponential backoff, graceful shutdown
 - **Streaming**: Real-time output via MongoDB change streams (with fallback to polling)
-- **Production-ready**: Proper indexing, error handling, and connection management
+- **Production-ready**: Proper indexing, error handling, connection pooling, and lock management
 
 ## Installation
 
@@ -97,7 +97,7 @@ The MongoDB World creates the following collections:
 - `events` - Event log for workflow replay
 - `hooks` - Hook registrations for pausing workflows
 - `stream_chunks` - Stream output chunks
-- `idempotency_keys` - TTL-based idempotency tracking (auto-expires)
+- `queue_messages` - Persistent message queue with status tracking
 
 ## Indexes
 
@@ -128,9 +128,12 @@ Proper indexes are created automatically on first use:
 - `{ streamName: 1, chunkId: 1 }`
 - `{ chunkId: 1 }` (unique)
 
-### Idempotency Keys Collection
-- `{ createdAt: 1 }` (TTL index, expires after 60 seconds)
-- `{ key: 1 }` (unique, sparse)
+### Queue Messages Collection
+- `{ messageId: 1 }` (unique)
+- `{ status: 1, scheduledFor: 1, createdAt: 1 }` (polling)
+- `{ idempotencyKey: 1 }` (unique, partial - for deduplication)
+- `{ status: 1, lockedUntil: 1 }` (partial on processing - for recovery)
+- `{ updatedAt: 1 }` (TTL index - auto-deletes completed/failed after 7 days)
 
 ## Development
 
@@ -165,18 +168,47 @@ If you already have MongoDB running locally, the tests will use the existing ins
 
 ## Key Patterns
 
-### TTL-Based Idempotency
+### Production Queue
 
-The queue implementation uses MongoDB's TTL indexes for idempotency tracking. This prevents duplicate message processing while allowing legitimate workflow continuations:
+The queue implementation is production-ready with:
 
+**Persistent Message Storage:**
 ```typescript
-// Track recently queued messages with automatic cleanup
-const idempotencyCollection = db.collection('idempotency_keys');
-await idempotencyCollection.createIndex(
-  { createdAt: 1 },
-  { expireAfterSeconds: 60 }
+// Messages are stored in queue_messages collection
+interface QueueMessage {
+  messageId: string;
+  queueName: string;
+  payload: Buffer;           // Binary data via BSON
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  attempt: number;
+  maxRetries: number;
+  scheduledFor: Date;        // Supports delayed processing
+  lockedUntil?: Date;        // Lock expiration
+  lockToken?: string;        // Ownership verification
+  idempotencyKey?: string;   // Deduplication
+  lastError?: { message: string; status?: number; timestamp: Date };
+}
+```
+
+**Atomic Idempotency:** Uses `findOneAndUpdate` with upsert (not check-then-insert):
+```typescript
+await messagesCollection.findOneAndUpdate(
+  { idempotencyKey, createdAt: { $gt: cutoff } },
+  { $setOnInsert: { /* new message */ }, $set: { updatedAt: now } },
+  { upsert: true, returnDocument: 'after' }
 );
 ```
+
+**Lock Management:** Prevents duplicate processing with token verification:
+```typescript
+// Acquire: atomically set status + lockToken + lockedUntil
+// Complete: verify lockToken still valid before marking done
+// Recover: periodically reset stuck messages with expired locks
+```
+
+**Exponential Backoff:** Failures retry with increasing delays (1s → 60s max, with jitter).
+
+**Graceful Shutdown:** Waits for in-flight messages before stopping, releases locks on timeout.
 
 ### Lazy Initialization
 
@@ -211,15 +243,19 @@ The implementation uses `WorkflowAPIError` from `@workflow/errors` for consisten
 
 ## Production Considerations
 
-1. **Connection Pooling**: The MongoDB driver handles connection pooling automatically
+1. **Connection Pooling**: MongoDB client is cached per connection string to share across multiple `createWorld()` calls
 
 2. **Replica Sets**: For production, use a MongoDB replica set to enable change streams and high availability
 
 3. **Indexes**: All required indexes are created automatically, but monitor query performance
 
-4. **Cleanup**: The idempotency keys collection uses TTL indexes for automatic cleanup
+4. **Message Cleanup**: Completed/failed messages auto-delete after 7 days via TTL index (configurable)
 
-5. **Monitoring**: Monitor MongoDB metrics (connections, operations, replication lag)
+5. **Stuck Message Recovery**: Messages with expired locks are automatically recovered on startup and every 60 seconds
+
+6. **Graceful Shutdown**: Call `start()` to begin processing; the queue waits up to 30 seconds for in-flight messages during shutdown
+
+7. **Monitoring**: Monitor MongoDB metrics (connections, operations, replication lag, queue_messages collection size)
 
 ## License
 

@@ -27,11 +27,40 @@ All options are configurable via `WORKFLOW_` prefixed environment variables:
 
 ```
 src/
-├── index.ts      # Main entry, createWorld factory
+├── index.ts      # Main entry, createWorld factory, client caching
 ├── storage.ts    # Runs, steps, events, hooks collections
-├── queue.ts      # TTL-based idempotency queue
+├── queue.ts      # Production queue with persistence, locks, backoff
 └── streamer.ts   # Change streams for real-time output
 ```
+
+### Queue Architecture
+
+The queue is production-ready with these components:
+
+```
+Message Flow:
+queue() → insert to queue_messages (pending)
+       → watcher detects new message
+       → acquireLock() sets status=processing, lockToken, lockedUntil
+       → processMessage() makes HTTP callback
+       → completeMessage() or failMessage() (verifies lockToken)
+
+Recovery:
+start() → recoverStuckMessages() (reset expired locks)
+       → setInterval for periodic recovery (60s)
+
+Shutdown:
+close() → stop watcher
+       → wait for in-flight (30s timeout)
+       → release locks for remaining messages
+```
+
+**Key patterns:**
+- Atomic idempotency via `findOneAndUpdate` with upsert
+- Lock tokens prevent duplicate processing after lock expiry
+- Exponential backoff (1s → 60s) with jitter for retries
+- 503 with `timeoutSeconds` rescheduled without incrementing attempt
+- Dual-mode watcher: Change Streams (replica set) or polling fallback
 
 ## Key Implementation Details
 
@@ -52,7 +81,7 @@ src/
 - `events` - Event log for replay
 - `hooks` - Hook registrations
 - `stream_chunks` - Stream output
-- `idempotency_keys` - TTL-based dedup (auto-expires)
+- `queue_messages` - Persistent message queue (status, locks, retries)
 
 ### Testing
 
