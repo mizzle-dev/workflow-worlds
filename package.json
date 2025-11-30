@@ -5,10 +5,14 @@
   "description": "Custom World implementations for the Workflow DevKit",
   "type": "module",
   "scripts": {
-    "build": "pnpm -r build",
-    "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck",
-    "clean": "pnpm -r clean"
+    "build": "pnpm -r --filter='!@workflow-worlds/workbench' build",
+    "test": "pnpm -r --filter='!@workflow-worlds/workbench' test",
+    "typecheck": "pnpm -r --filter='!@workflow-worlds/workbench' typecheck",
+    "clean": "pnpm -r clean",
+    "bench": "pnpm --filter @workflow-worlds/workbench bench",
+    "bench:starter": "WORKFLOW_TARGET_WORLD=@workflow-worlds/starter pnpm bench",
+    "bench:mongodb": "WORKFLOW_TARGET_WORLD=@workflow-worlds/mongodb pnpm bench",
+    "bench:redis": "WORKFLOW_TARGET_WORLD=@workflow-worlds/redis pnpm bench"
   },
   "keywords": [
     "workflow",

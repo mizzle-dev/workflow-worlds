@@ -1,0 +1,329 @@
+name: Performance Benchmarks
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Phase 0: Create placeholder PR comment (so it's pinned to the top)
+  pr-comment-start:
+    name: Create PR Comment
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 2
+    steps:
+      - name: Create initial benchmark comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark-results
+          message: |
+            ## Benchmark Results
+
+            Benchmarks are running...
+
+            This comment will be updated with the results when the benchmarks complete.
+
+  # Phase 1: Build all packages
+  build:
+    name: Build Packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build all packages
+        run: pnpm build
+
+      # Cache node_modules and package build outputs
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            node_modules
+            packages/*/dist
+            workbench/node_modules
+          retention-days: 1
+
+  # Phase 2a: Starter (in-memory) benchmarks
+  benchmark-starter:
+    name: Benchmark Starter (in-memory)
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workbench
+        run: pnpm --filter @workflow-worlds/workbench build
+        env:
+          WORKFLOW_TARGET_WORLD: "@workflow-worlds/starter"
+
+      - name: Run benchmarks
+        env:
+          DEPLOYMENT_URL: "http://localhost:3000"
+          WORLD_NAME: starter
+          WORKFLOW_TARGET_WORLD: "@workflow-worlds/starter"
+        run: |
+          cd workbench
+          pnpm start &
+          echo "Waiting for server to start..."
+          sleep 10
+          cd ..
+          pnpm --filter @workflow-worlds/workbench vitest bench --run --outputJson=bench-results-starter.json
+
+      - name: Render benchmark results
+        uses: ./.github/actions/render-benchmarks
+        with:
+          benchmark-file: bench-results-starter.json
+          world-name: starter
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-starter
+          path: |
+            bench-results-starter.json
+            workbench/bench-timings-starter.json
+
+  # Phase 2b: MongoDB benchmarks
+  benchmark-mongodb:
+    name: Benchmark MongoDB
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand(\"ping\").ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workbench
+        run: pnpm --filter @workflow-worlds/workbench build
+        env:
+          WORKFLOW_TARGET_WORLD: "@workflow-worlds/mongodb"
+          WORKFLOW_MONGODB_URI: "mongodb://localhost:27017/workflow"
+
+      - name: Run benchmarks
+        env:
+          DEPLOYMENT_URL: "http://localhost:3000"
+          WORLD_NAME: mongodb
+          WORKFLOW_TARGET_WORLD: "@workflow-worlds/mongodb"
+          WORKFLOW_MONGODB_URI: "mongodb://localhost:27017/workflow"
+        run: |
+          cd workbench
+          pnpm start &
+          echo "Waiting for server to start..."
+          sleep 10
+          cd ..
+          pnpm --filter @workflow-worlds/workbench vitest bench --run --outputJson=bench-results-mongodb.json
+
+      - name: Render benchmark results
+        uses: ./.github/actions/render-benchmarks
+        with:
+          benchmark-file: bench-results-mongodb.json
+          world-name: mongodb
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-mongodb
+          path: |
+            bench-results-mongodb.json
+            workbench/bench-timings-mongodb.json
+
+  # Phase 2c: Redis benchmarks
+  benchmark-redis:
+    name: Benchmark Redis
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workbench
+        run: pnpm --filter @workflow-worlds/workbench build
+        env:
+          WORKFLOW_TARGET_WORLD: "@workflow-worlds/redis"
+          WORKFLOW_REDIS_URI: "redis://localhost:6379"
+
+      - name: Run benchmarks
+        env:
+          DEPLOYMENT_URL: "http://localhost:3000"
+          WORLD_NAME: redis
+          WORKFLOW_TARGET_WORLD: "@workflow-worlds/redis"
+          WORKFLOW_REDIS_URI: "redis://localhost:6379"
+        run: |
+          cd workbench
+          pnpm start &
+          echo "Waiting for server to start..."
+          sleep 10
+          cd ..
+          pnpm --filter @workflow-worlds/workbench vitest bench --run --outputJson=bench-results-redis.json
+
+      - name: Render benchmark results
+        uses: ./.github/actions/render-benchmarks
+        with:
+          benchmark-file: bench-results-redis.json
+          world-name: redis
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-redis
+          path: |
+            bench-results-redis.json
+            workbench/bench-timings-redis.json
+
+  # Phase 3: Aggregate all benchmark results and create comparison
+  summary:
+    name: Benchmark Summary
+    runs-on: ubuntu-latest
+    needs: [benchmark-starter, benchmark-mongodb, benchmark-redis]
+    if: always() && !cancelled()
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all benchmark artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bench-results-*
+          path: benchmark-results
+          merge-multiple: true
+
+      - name: List downloaded files
+        run: find benchmark-results -type f -name "*.json" | sort
+
+      - name: Aggregate and compare benchmarks
+        id: aggregate
+        run: |
+          # Capture output to both file and step summary
+          node .github/scripts/aggregate-benchmarks.js benchmark-results | tee benchmark-summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Check benchmark job statuses
+        id: check-status
+        run: |
+          # Check if any benchmark jobs failed
+          STARTER_STATUS="${{ needs.benchmark-starter.result }}"
+          MONGODB_STATUS="${{ needs.benchmark-mongodb.result }}"
+          REDIS_STATUS="${{ needs.benchmark-redis.result }}"
+
+          echo "starter=$STARTER_STATUS" >> $GITHUB_OUTPUT
+          echo "mongodb=$MONGODB_STATUS" >> $GITHUB_OUTPUT
+          echo "redis=$REDIS_STATUS" >> $GITHUB_OUTPUT
+
+          if [[ "$STARTER_STATUS" == "failure" || "$MONGODB_STATUS" == "failure" || "$REDIS_STATUS" == "failure" ]]; then
+            echo "has_failures=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_failures=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update PR comment with results
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark-results
+          path: benchmark-summary.md
+
+      - name: Append failure notice to PR comment
+        if: github.event_name == 'pull_request' && steps.check-status.outputs.has_failures == 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark-results
+          append: true
+          message: |
+
+            ---
+            Some benchmark jobs failed:
+            - Starter: ${{ needs.benchmark-starter.result }}
+            - MongoDB: ${{ needs.benchmark-mongodb.result }}
+            - Redis: ${{ needs.benchmark-redis.result }}
+
+            Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
