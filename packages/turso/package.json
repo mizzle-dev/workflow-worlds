@@ -1,0 +1,59 @@
+{
+  "name": "@workflow-worlds/turso",
+  "version": "0.0.1",
+  "description": "Turso/libSQL World implementation for Workflow DevKit",
+  "author": "Dustin Townsend",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mizzle-dev/workflow-worlds.git",
+    "directory": "packages/turso"
+  },
+  "homepage": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/turso#readme",
+  "bugs": {
+    "url": "https://github.com/mizzle-dev/workflow-worlds/issues"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "pnpm build && vitest run",
+    "test:only": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "@workflow/errors": "4.0.1-beta.6",
+    "@workflow/world": "4.0.1-beta.7",
+    "@vercel/queue": "^0.0.0-alpha.29",
+    "ulid": "^2.3.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@workflow/world-testing": "4.0.1-beta.23",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "workflow",
+    "world",
+    "turso",
+    "libsql",
+    "sqlite",
+    "durable-functions"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
