@@ -10,6 +10,7 @@ const worldConfig = {
   default: { emoji: '📦', label: 'Default (built-in)' },
   starter: { emoji: '💾', label: 'Starter (in-memory)' },
   mongodb: { emoji: '🍃', label: 'MongoDB' },
+  postgres: { emoji: '🐘', label: 'PostgreSQL' },
   redis: { emoji: '🔴', label: 'Redis' },
 };
 
@@ -137,8 +138,8 @@ function getWorlds(data) {
     }
   }
 
-  // Sort: default, starter, mongodb, redis
-  const worldOrder = ['default', 'starter', 'mongodb', 'redis'];
+  // Sort: default, starter, mongodb, postgres, redis
+  const worldOrder = ['default', 'starter', 'mongodb', 'postgres', 'redis'];
   return [...worlds].sort(
     (a, b) => worldOrder.indexOf(a) - worldOrder.indexOf(b)
   );
@@ -273,6 +274,7 @@ function renderComparison(data) {
   console.log('- 📦 Default: Built-in workflow world');
   console.log('- 💾 Starter: In-memory reference implementation');
   console.log('- 🍃 MongoDB: MongoDB database backend');
+  console.log('- 🐘 PostgreSQL: PostgreSQL database backend');
   console.log('- 🔴 Redis: Redis/BullMQ backend');
   console.log('</details>');
 }

@@ -40,6 +40,8 @@ function getWorldEmoji(world) {
       return '💾';
     case 'mongodb':
       return '🍃';
+    case 'postgres':
+      return '🐘';
     case 'redis':
       return '🔴';
     default:

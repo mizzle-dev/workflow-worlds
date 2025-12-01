@@ -285,7 +285,83 @@ jobs:
             bench-results-redis.json
             workbench/bench-timings-redis.json
 
-  # Phase 2d: Default (built-in) world benchmarks
+  # Phase 2d: PostgreSQL benchmarks
+  benchmark-postgres:
+    name: Benchmark PostgreSQL
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: workflow
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workbench
+        run: pnpm --filter @workflow-worlds/workbench build
+        env:
+          WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
+          WORKFLOW_POSTGRES_URL: "postgres://postgres:postgres@localhost:5432/workflow"
+
+      - name: Run benchmarks
+        run: |
+          cd workbench
+          pnpm start &
+          SERVER_PID=$!
+          trap "kill $SERVER_PID 2>/dev/null" EXIT
+          echo "Waiting for server to start..."
+          sleep 10
+          npx vitest bench --run --outputJson=../bench-results-postgres.json
+        env:
+          DEPLOYMENT_URL: "http://localhost:3000"
+          WORLD_NAME: postgres
+          WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
+          WORKFLOW_POSTGRES_URL: "postgres://postgres:postgres@localhost:5432/workflow"
+
+      - name: Render benchmark results
+        uses: ./.github/actions/render-benchmarks
+        with:
+          benchmark-file: bench-results-postgres.json
+          world-name: postgres
+
+      - name: Upload benchmark results
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-postgres
+          path: |
+            bench-results-postgres.json
+            workbench/bench-timings-postgres.json
+
+  # Phase 2e: Default (built-in) world benchmarks
   benchmark-default:
     name: Benchmark Default (built-in)
     runs-on: ubuntu-latest
@@ -345,7 +421,7 @@ jobs:
   summary:
     name: Benchmark Summary
     runs-on: ubuntu-latest
-    needs: [benchmark-starter, benchmark-mongodb, benchmark-redis, benchmark-default]
+    needs: [benchmark-starter, benchmark-mongodb, benchmark-redis, benchmark-postgres, benchmark-default]
     if: always() && !cancelled()
     timeout-minutes: 10
 
@@ -375,14 +451,16 @@ jobs:
           STARTER_STATUS="${{ needs.benchmark-starter.result }}"
           MONGODB_STATUS="${{ needs.benchmark-mongodb.result }}"
           REDIS_STATUS="${{ needs.benchmark-redis.result }}"
+          POSTGRES_STATUS="${{ needs.benchmark-postgres.result }}"
           DEFAULT_STATUS="${{ needs.benchmark-default.result }}"
 
           echo "starter=$STARTER_STATUS" >> $GITHUB_OUTPUT
           echo "mongodb=$MONGODB_STATUS" >> $GITHUB_OUTPUT
           echo "redis=$REDIS_STATUS" >> $GITHUB_OUTPUT
+          echo "postgres=$POSTGRES_STATUS" >> $GITHUB_OUTPUT
           echo "default=$DEFAULT_STATUS" >> $GITHUB_OUTPUT
 
-          if [[ "$STARTER_STATUS" == "failure" || "$MONGODB_STATUS" == "failure" || "$REDIS_STATUS" == "failure" || "$DEFAULT_STATUS" == "failure" ]]; then
+          if [[ "$STARTER_STATUS" == "failure" || "$MONGODB_STATUS" == "failure" || "$REDIS_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$DEFAULT_STATUS" == "failure" ]]; then
             echo "has_failures=true" >> $GITHUB_OUTPUT
           else
             echo "has_failures=false" >> $GITHUB_OUTPUT
@@ -408,6 +486,7 @@ jobs:
             - Default: ${{ needs.benchmark-default.result }}
             - Starter: ${{ needs.benchmark-starter.result }}
             - MongoDB: ${{ needs.benchmark-mongodb.result }}
+            - PostgreSQL: ${{ needs.benchmark-postgres.result }}
             - Redis: ${{ needs.benchmark-redis.result }}
 
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
