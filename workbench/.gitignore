@@ -1,0 +1,14 @@
+# Build output
+.output/
+.nitro/
+dist/
+
+# Generated files
+_workflows.ts
+
+# Benchmark results (should be generated fresh)
+bench-results-*.json
+bench-timings-*.json
+
+# Dependencies
+node_modules/
