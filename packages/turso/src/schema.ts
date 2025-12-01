@@ -121,6 +121,14 @@ CREATE INDEX IF NOT EXISTS idx_chunks_stream ON stream_chunks(stream_name, chunk
  * Creates all required tables and indexes.
  */
 export async function initializeSchema(client: Client): Promise<void> {
+  // Enable WAL mode for better concurrent access (reduces SQLITE_BUSY errors)
+  // WAL allows concurrent reads while writing
+  await client.execute('PRAGMA journal_mode = WAL');
+
+  // Set busy timeout to wait for locks instead of failing immediately
+  // 5000ms should be enough for most operations
+  await client.execute('PRAGMA busy_timeout = 5000');
+
   // Split by semicolons and execute each statement
   const statements = SCHEMA_SQL
     .split(';')
