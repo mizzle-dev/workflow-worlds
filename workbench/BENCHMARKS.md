@@ -131,6 +131,12 @@ Key files to sync:
 2. Benchmark tests (`bench.bench.ts`)
 3. GitHub Actions scripts (aggregate, render)
 
+**Important transformation for `render.js`:**
+- workflow repo: `render.js <benchmark-file> <app-name> <backend>` (3 args)
+- workflow-worlds: `render.js <benchmark-file> <world>` (2 args)
+
+The workflow repo tests multiple apps (nextjs, nitro, express) × backends, so it needs both app-name and backend. This repo only tests different world implementations against a single workbench app.
+
 ### World Configuration
 
 Both repos use the same world configuration for consistency:

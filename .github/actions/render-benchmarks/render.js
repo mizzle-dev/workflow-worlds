@@ -3,11 +3,12 @@
 import fs from 'fs';
 import path from 'path';
 
-// Parse arguments: render.js <benchmark-file> <app-name> <backend> [--baseline <baseline-file>]
+// Parse arguments: render.js <benchmark-file> <world> [--baseline <baseline-file>]
+// Note: workflow repo uses 3 args (benchmark-file, app-name, backend) but workflow-worlds
+// only needs 2 since there's a single workbench app testing multiple worlds.
 const args = process.argv.slice(2);
 let benchmarkFile = null;
-let appName = null;
-let backend = null;
+let world = null;
 let baselineFile = null;
 
 for (let i = 0; i < args.length; i++) {
@@ -16,16 +17,14 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (!benchmarkFile) {
     benchmarkFile = args[i];
-  } else if (!appName) {
-    appName = args[i];
-  } else if (!backend) {
-    backend = args[i];
+  } else if (!world) {
+    world = args[i];
   }
 }
 
-if (!benchmarkFile || !appName || !backend) {
+if (!benchmarkFile || !world) {
   console.error(
-    'Usage: render.js <benchmark-file> <app-name> <backend> [--baseline <baseline-file>]'
+    'Usage: render.js <benchmark-file> <world> [--baseline <baseline-file>]'
   );
   process.exit(1);
 }
@@ -137,8 +136,8 @@ function getWorldEmoji(world) {
 try {
   const data = JSON.parse(fs.readFileSync(benchmarkFile, 'utf-8'));
 
-  const emoji = getWorldEmoji(backend);
-  console.log(`## ${emoji} Benchmark Results: ${appName} (${backend} world)\n`);
+  const emoji = getWorldEmoji(world);
+  console.log(`## ${emoji} Benchmark Results: ${world} world\n`);
 
   // Show baseline comparison note if baseline data is available
   if (Object.keys(baselineLookup).length > 0) {
