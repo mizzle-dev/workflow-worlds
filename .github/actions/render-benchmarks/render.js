@@ -34,6 +34,8 @@ function formatSec(ms, decimals = 3) {
 // Get world emoji
 function getWorldEmoji(world) {
   switch (world) {
+    case 'default':
+      return '📦';
     case 'starter':
       return '💾';
     case 'mongodb':

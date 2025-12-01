@@ -7,6 +7,7 @@ const [, , resultsDir = '.'] = process.argv;
 
 // World display config
 const worldConfig = {
+  default: { emoji: '📦', label: 'Default (built-in)' },
   starter: { emoji: '💾', label: 'Starter (in-memory)' },
   mongodb: { emoji: '🍃', label: 'MongoDB' },
   redis: { emoji: '🔴', label: 'Redis' },
@@ -136,8 +137,8 @@ function getWorlds(data) {
     }
   }
 
-  // Sort: starter, mongodb, redis
-  const worldOrder = ['starter', 'mongodb', 'redis'];
+  // Sort: default, starter, mongodb, redis
+  const worldOrder = ['default', 'starter', 'mongodb', 'redis'];
   return [...worlds].sort(
     (a, b) => worldOrder.indexOf(a) - worldOrder.indexOf(b)
   );
@@ -269,6 +270,7 @@ function renderComparison(data) {
   );
   console.log('');
   console.log('**Worlds:**');
+  console.log('- 📦 Default: Built-in workflow world');
   console.log('- 💾 Starter: In-memory reference implementation');
   console.log('- 🍃 MongoDB: MongoDB database backend');
   console.log('- 🔴 Redis: Redis/BullMQ backend');
