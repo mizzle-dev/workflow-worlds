@@ -140,6 +140,9 @@ export function createStreamer(config: StreamerConfig): Streamer {
       name: string,
       startIndex = 0
     ): Promise<ReadableStream<Uint8Array>> {
+      // Store cleanup function so cancel() can access it
+      let cleanup: (() => void) | null = null;
+
       return new ReadableStream<Uint8Array>({
         start(controller) {
           // Track chunks we've already delivered to prevent duplicates
@@ -176,7 +179,7 @@ export function createStreamer(config: StreamerConfig): Streamer {
 
           // Handler for stream close
           const closeHandler = () => {
-            cleanup();
+            cleanup?.();
             try {
               controller.close();
             } catch {
@@ -184,8 +187,8 @@ export function createStreamer(config: StreamerConfig): Streamer {
             }
           };
 
-          // Cleanup function
-          const cleanup = () => {
+          // Cleanup function - removes only this reader's handlers
+          cleanup = () => {
             emitter.off(`chunk:${name}`, chunkHandler);
             emitter.off(`close:${name}`, closeHandler);
           };
@@ -211,7 +214,7 @@ export function createStreamer(config: StreamerConfig): Streamer {
 
                 // Check for EOF
                 if (chunk.eof) {
-                  cleanup();
+                  cleanup?.();
                   controller.close();
                   return;
                 }
@@ -239,7 +242,7 @@ export function createStreamer(config: StreamerConfig): Streamer {
 
               for (const chunk of bufferedEventChunks) {
                 if (chunk.eof) {
-                  cleanup();
+                  cleanup?.();
                   controller.close();
                   return;
                 }
@@ -249,16 +252,15 @@ export function createStreamer(config: StreamerConfig): Streamer {
               }
 
             } catch (error) {
-              cleanup();
+              cleanup?.();
               controller.error(error);
             }
           })();
         },
 
         cancel() {
-          // Clean up listeners when stream is cancelled
-          emitter.removeAllListeners(`chunk:${name}`);
-          emitter.removeAllListeners(`close:${name}`);
+          // Clean up only this reader's listeners when stream is cancelled
+          cleanup?.();
         },
       });
     },

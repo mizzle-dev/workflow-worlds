@@ -236,6 +236,7 @@ export function createQueue(config: QueueConfig): {
 
   /**
    * Poll for and process pending messages.
+   * Uses a write transaction to atomically claim messages and prevent race conditions.
    */
   async function pollAndProcess(): Promise<void> {
     if (!isRunning || isShuttingDown) {
@@ -245,41 +246,55 @@ export function createQueue(config: QueueConfig): {
     try {
       const now = new Date().toISOString();
 
-      // Find a pending message that's ready to process
-      const result = await client.execute({
-        sql: `SELECT message_id, queue_name, payload, attempt
-              FROM queue_messages
-              WHERE status = 'pending' AND (not_before IS NULL OR not_before <= ?)
-              ORDER BY created_at ASC
-              LIMIT 1`,
-        args: [now],
-      });
+      // Use a write transaction to atomically select and claim a message
+      // This prevents race conditions where multiple pollers claim the same message
+      const tx = await client.transaction('write');
+      let messageId: MessageId | null = null;
+      let queueName: ValidQueueName | null = null;
+      let payload: string | null = null;
+      let attempt = 1;
 
-      if (result.rows.length > 0) {
-        const row = result.rows[0];
-        const messageId = row.message_id as MessageId;
-        const queueName = row.queue_name as ValidQueueName;
-        const payload = row.payload as string;
-        const attempt = (row.attempt as number) || 1;
-
-        // Mark as processing
-        const updateResult = await client.execute({
-          sql: `UPDATE queue_messages SET status = 'processing' WHERE message_id = ? AND status = 'pending'`,
-          args: [messageId],
+      try {
+        // Find a pending message that's ready to process
+        const result = await tx.execute({
+          sql: `SELECT message_id, queue_name, payload, attempt
+                FROM queue_messages
+                WHERE status = 'pending' AND (not_before IS NULL OR not_before <= ?)
+                ORDER BY created_at ASC
+                LIMIT 1`,
+          args: [now],
         });
 
-        // Only process if we successfully claimed it
-        if (updateResult.rowsAffected > 0) {
-          await acquireConcurrency();
-          // Process in background
-          processMessage(messageId, queueName, payload, attempt)
-            .catch((err) => {
-              console.error('[turso-world] Error processing message:', err);
-            })
-            .finally(() => {
-              releaseConcurrency();
-            });
+        if (result.rows.length > 0) {
+          const row = result.rows[0];
+          messageId = row.message_id as MessageId;
+          queueName = row.queue_name as ValidQueueName;
+          payload = row.payload as string;
+          attempt = (row.attempt as number) || 1;
+
+          // Mark as processing within the same transaction
+          await tx.execute({
+            sql: `UPDATE queue_messages SET status = 'processing' WHERE message_id = ?`,
+            args: [messageId],
+          });
         }
+
+        await tx.commit();
+      } catch (err) {
+        await tx.rollback();
+        throw err;
+      }
+
+      // Process outside the transaction to avoid holding the lock
+      if (messageId && queueName && payload) {
+        await acquireConcurrency();
+        processMessage(messageId, queueName, payload, attempt)
+          .catch((err) => {
+            console.error('[turso-world] Error processing message:', err);
+          })
+          .finally(() => {
+            releaseConcurrency();
+          });
       }
     } catch (err) {
       console.error('[turso-world] Poll error:', err);
