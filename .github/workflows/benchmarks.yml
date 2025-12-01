@@ -113,14 +113,13 @@ jobs:
           WORKFLOW_TARGET_WORLD: "@workflow-worlds/starter"
 
       - name: Render benchmark results
-        if: always()
         uses: ./.github/actions/render-benchmarks
         with:
           benchmark-file: bench-results-starter.json
           world-name: starter
 
       - name: Upload benchmark results
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: bench-results-starter
@@ -187,14 +186,13 @@ jobs:
           WORKFLOW_MONGODB_URI: "mongodb://localhost:27017/workflow"
 
       - name: Render benchmark results
-        if: always()
         uses: ./.github/actions/render-benchmarks
         with:
           benchmark-file: bench-results-mongodb.json
           world-name: mongodb
 
       - name: Upload benchmark results
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: bench-results-mongodb
@@ -244,12 +242,9 @@ jobs:
           WORKFLOW_TARGET_WORLD: "@workflow-worlds/redis"
           WORKFLOW_REDIS_URI: "redis://localhost:6379"
 
-      - name: Flush Redis
-        run: redis-cli FLUSHALL
-
       - name: Run benchmarks
         run: |
-          redis-cli FLUSHALL
+          echo "FLUSHALL" | nc localhost 6379 || true
           cd workbench
           pnpm start &
           SERVER_PID=$!
@@ -265,14 +260,13 @@ jobs:
           WORKFLOW_REDIS_URI: "redis://localhost:6379"
 
       - name: Render benchmark results
-        if: always()
         uses: ./.github/actions/render-benchmarks
         with:
           benchmark-file: bench-results-redis.json
           world-name: redis
 
       - name: Upload benchmark results
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: bench-results-redis
