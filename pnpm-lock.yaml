@@ -37,7 +37,7 @@ importers:
         version: 22.19.1
       '@workflow/world-testing':
         specifier: 4.0.1-beta.23
-        version: 4.0.1-beta.23(@aws-sdk/client-sts@3.940.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
+        version: 4.0.1-beta.23(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -71,7 +71,7 @@ importers:
         version: 22.19.1
       '@workflow/world-testing':
         specifier: 4.0.1-beta.23
-        version: 4.0.1-beta.23(@aws-sdk/client-sts@3.940.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
+        version: 4.0.1-beta.23(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -102,7 +102,7 @@ importers:
         version: 22.19.1
       '@workflow/world-testing':
         specifier: 4.0.1-beta.23
-        version: 4.0.1-beta.23(@aws-sdk/client-sts@3.940.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
+        version: 4.0.1-beta.23(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -136,7 +136,7 @@ importers:
         version: 22.19.1
       '@workflow/world-testing':
         specifier: 4.0.1-beta.23
-        version: 4.0.1-beta.23(@aws-sdk/client-sts@3.940.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
+        version: 4.0.1-beta.23(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -159,12 +159,15 @@ importers:
       '@workflow-worlds/starter':
         specifier: workspace:*
         version: link:../packages/starter
+      '@workflow-worlds/turso':
+        specifier: workspace:*
+        version: link:../packages/turso
       '@workflow/world-postgres':
         specifier: ^4.1.0-beta.15
         version: 4.1.0-beta.15(@libsql/client@0.14.0)(pg@8.16.3)
       nitro:
         specifier: ^3.0.1-alpha.1
-        version: 3.0.1-alpha.1(@libsql/client@0.14.0)(@vercel/functions@3.3.4(@aws-sdk/credential-provider-web-identity@3.940.0))(chokidar@4.0.3)(drizzle-orm@0.44.7(@libsql/client@0.14.0)(pg@8.16.3)(postgres@3.4.7))(ioredis@5.8.2)(mongodb@6.21.0)(rollup@4.53.3)(vite@7.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
+        version: 3.0.1-alpha.1(@libsql/client@0.14.0)(@vercel/functions@3.3.4(@aws-sdk/credential-provider-web-identity@3.609.0(@aws-sdk/client-sts@3.940.0)))(chokidar@4.0.3)(drizzle-orm@0.44.7(@libsql/client@0.14.0)(pg@8.16.3)(postgres@3.4.7))(ioredis@5.8.2)(mongodb@6.21.0)(rollup@4.53.3)(vite@7.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
       vitest:
         specifier: ^3.2.0
         version: 3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1)
@@ -5064,13 +5067,6 @@ snapshots:
     optionalDependencies:
       '@aws-sdk/credential-provider-web-identity': 3.609.0(@aws-sdk/client-sts@3.940.0)
 
-  '@vercel/functions@3.3.4(@aws-sdk/credential-provider-web-identity@3.940.0)':
-    dependencies:
-      '@vercel/oidc': 3.0.5
-    optionalDependencies:
-      '@aws-sdk/credential-provider-web-identity': 3.940.0
-    optional: true
-
   '@vercel/oidc@3.0.5': {}
 
   '@vercel/queue@0.0.0-alpha.29':
@@ -5361,7 +5357,7 @@ snapshots:
       - sql.js
       - sqlite3
 
-  '@workflow/world-testing@4.0.1-beta.23(@aws-sdk/client-sts@3.940.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))':
+  '@workflow/world-testing@4.0.1-beta.23(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))':
     dependencies:
       '@hono/node-server': 1.19.5(hono@4.9.10)
       '@workflow/cli': 4.0.1-beta.22(@aws-sdk/client-sts@3.940.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)
@@ -6320,7 +6316,7 @@ snapshots:
 
   nf3@0.1.12: {}
 
-  nitro@3.0.1-alpha.1(@libsql/client@0.14.0)(@vercel/functions@3.3.4(@aws-sdk/credential-provider-web-identity@3.940.0))(chokidar@4.0.3)(drizzle-orm@0.44.7(@libsql/client@0.14.0)(pg@8.16.3)(postgres@3.4.7))(ioredis@5.8.2)(mongodb@6.21.0)(rollup@4.53.3)(vite@7.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1)):
+  nitro@3.0.1-alpha.1(@libsql/client@0.14.0)(@vercel/functions@3.3.4(@aws-sdk/credential-provider-web-identity@3.609.0(@aws-sdk/client-sts@3.940.0)))(chokidar@4.0.3)(drizzle-orm@0.44.7(@libsql/client@0.14.0)(pg@8.16.3)(postgres@3.4.7))(ioredis@5.8.2)(mongodb@6.21.0)(rollup@4.53.3)(vite@7.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1)):
     dependencies:
       consola: 3.4.2
       crossws: 0.4.1(srvx@0.9.7)
@@ -6335,7 +6331,7 @@ snapshots:
       srvx: 0.9.7
       undici: 7.16.0
       unenv: 2.0.0-rc.24
-      unstorage: 2.0.0-alpha.4(@vercel/functions@3.3.4(@aws-sdk/credential-provider-web-identity@3.940.0))(chokidar@4.0.3)(db0@0.3.4(@libsql/client@0.14.0)(drizzle-orm@0.44.7(@libsql/client@0.14.0)(pg@8.16.3)(postgres@3.4.7)))(ioredis@5.8.2)(mongodb@6.21.0)(ofetch@2.0.0-alpha.3)
+      unstorage: 2.0.0-alpha.4(@vercel/functions@3.3.4(@aws-sdk/credential-provider-web-identity@3.609.0(@aws-sdk/client-sts@3.940.0)))(chokidar@4.0.3)(db0@0.3.4(@libsql/client@0.14.0)(drizzle-orm@0.44.7(@libsql/client@0.14.0)(pg@8.16.3)(postgres@3.4.7)))(ioredis@5.8.2)(mongodb@6.21.0)(ofetch@2.0.0-alpha.3)
     optionalDependencies:
       rollup: 4.53.3
       vite: 7.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1)
@@ -7066,9 +7062,9 @@ snapshots:
       picomatch: 4.0.3
       webpack-virtual-modules: 0.6.2
 
-  unstorage@2.0.0-alpha.4(@vercel/functions@3.3.4(@aws-sdk/credential-provider-web-identity@3.940.0))(chokidar@4.0.3)(db0@0.3.4(@libsql/client@0.14.0)(drizzle-orm@0.44.7(@libsql/client@0.14.0)(pg@8.16.3)(postgres@3.4.7)))(ioredis@5.8.2)(mongodb@6.21.0)(ofetch@2.0.0-alpha.3):
+  unstorage@2.0.0-alpha.4(@vercel/functions@3.3.4(@aws-sdk/credential-provider-web-identity@3.609.0(@aws-sdk/client-sts@3.940.0)))(chokidar@4.0.3)(db0@0.3.4(@libsql/client@0.14.0)(drizzle-orm@0.44.7(@libsql/client@0.14.0)(pg@8.16.3)(postgres@3.4.7)))(ioredis@5.8.2)(mongodb@6.21.0)(ofetch@2.0.0-alpha.3):
     optionalDependencies:
-      '@vercel/functions': 3.3.4(@aws-sdk/credential-provider-web-identity@3.940.0)
+      '@vercel/functions': 3.3.4(@aws-sdk/credential-provider-web-identity@3.609.0(@aws-sdk/client-sts@3.940.0))
       chokidar: 4.0.3
       db0: 0.3.4(@libsql/client@0.14.0)(drizzle-orm@0.44.7(@libsql/client@0.14.0)(pg@8.16.3)(postgres@3.4.7))
       ioredis: 5.8.2

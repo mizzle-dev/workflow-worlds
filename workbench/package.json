@@ -18,6 +18,7 @@
   },
   "devDependencies": {
     "@workflow/world-postgres": "^4.1.0-beta.15",
+    "@workflow-worlds/turso": "workspace:*",
     "@workflow-worlds/mongodb": "workspace:*",
     "@workflow-worlds/redis": "workspace:*",
     "@workflow-worlds/starter": "workspace:*",
