@@ -243,7 +243,7 @@ jobs:
       - name: Run benchmarks
         run: |
           echo "Flushing Redis..."
-          echo "FLUSHALL" | nc localhost 6379 || true
+          echo "FLUSHALL" | nc -q 1 localhost 6379 || true
           sleep 1
 
           cd workbench
