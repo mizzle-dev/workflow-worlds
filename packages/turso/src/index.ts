@@ -5,6 +5,11 @@
  * queue, and streaming. Supports both embedded (local file) and
  * remote Turso databases.
  *
+ * Key behavior:
+ * - queue() stores messages in the database
+ * - start() begins processing messages
+ * - If start() is not called, messages are stored but not processed
+ *
  * Environment variables:
  * - WORKFLOW_TURSO_DATABASE_URL: Database URL (libsql://... or file:...)
  * - WORKFLOW_TURSO_AUTH_TOKEN: Auth token for remote Turso databases
@@ -59,6 +64,12 @@ export interface TursoWorldConfig {
    * Default: 3
    */
   maxRetries?: number;
+
+  /**
+   * Polling interval in milliseconds.
+   * Default: 100
+   */
+  pollIntervalMs?: number;
 }
 
 // Module-level client cache to reuse connections
@@ -87,7 +98,10 @@ function getOrCreateClient(url: string, authToken?: string): Client {
  * - Queue: Polling-based queue with TTL idempotency
  * - Streamer: Table-based chunks with EventEmitter notifications
  *
- * Supports both embedded (local file) and remote Turso databases.
+ * Key behavior:
+ * - queue() stores messages in the database
+ * - start() begins processing messages
+ * - If start() is not called, messages are stored but not processed
  */
 export function createWorld(config: TursoWorldConfig = {}): World {
   // Resolve configuration with environment variable fallbacks
@@ -111,8 +125,10 @@ export function createWorld(config: TursoWorldConfig = {}): World {
   // Lazy initialization promise
   let initPromise: Promise<{
     storage: ReturnType<typeof createStorage>;
-    queue: ReturnType<typeof createQueue>;
+    queue: ReturnType<typeof createQueue>['queue'];
     streamer: ReturnType<typeof createStreamer>;
+    startQueue: () => Promise<void>;
+    closeQueue: () => Promise<void>;
   }> | null = null;
 
   // Ensure initialized before any operation
@@ -124,16 +140,23 @@ export function createWorld(config: TursoWorldConfig = {}): World {
 
         // Create components
         const storage = createStorage({ client });
-        const queue = createQueue({
+        const queueResult = createQueue({
           client,
           baseUrl: config.baseUrl,
           concurrency,
           idempotencyTtlMs: config.idempotencyTtlMs,
           maxRetries: config.maxRetries,
+          pollIntervalMs: config.pollIntervalMs,
         });
         const streamer = createStreamer({ client });
 
-        return { storage, queue, streamer };
+        return {
+          storage,
+          queue: queueResult.queue,
+          streamer,
+          startQueue: queueResult.start,
+          closeQueue: queueResult.close,
+        };
       })();
     }
     return initPromise;
@@ -255,10 +278,10 @@ export function createWorld(config: TursoWorldConfig = {}): World {
     },
 
     createQueueHandler(prefix, handler) {
-      // Queue handler needs to be synchronous, so we create it eagerly
-      // but the actual initialization will be lazy
+      // This needs to return synchronously, so we create the handler immediately
+      // but it will initialize on first use
       let queueHandler: ReturnType<
-        ReturnType<typeof createQueue>['createQueueHandler']
+        ReturnType<typeof createQueue>['queue']['createQueueHandler']
       > | null = null;
 
       return async (req: Request): Promise<Response> => {
@@ -291,9 +314,14 @@ export function createWorld(config: TursoWorldConfig = {}): World {
     // =========================================================================
     // LIFECYCLE
     // =========================================================================
+
+    /**
+     * Start the World as a worker that processes queue messages.
+     * Without calling start(), the World will only store data but not process queue messages.
+     */
     async start(): Promise<void> {
-      // Ensure database is initialized
-      await ensureInitialized();
+      const { startQueue } = await ensureInitialized();
+      await startQueue();
     },
   };
 }

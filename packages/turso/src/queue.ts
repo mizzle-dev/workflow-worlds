@@ -3,9 +3,14 @@
  *
  * Implements the Queue interface using Turso/libSQL for message persistence
  * and polling-based message processing with TTL-based idempotency.
+ *
+ * Key behavior:
+ * - queue() stores messages in the database
+ * - start() begins polling and processing messages
+ * - If start() is not called, messages are stored but not processed
  */
 
-import type { Client } from '@libsql/client';
+import type { Client, InValue } from '@libsql/client';
 import { JsonTransport } from '@vercel/queue';
 import type {
   Queue,
@@ -50,6 +55,12 @@ export interface QueueConfig {
    * Default: 3
    */
   maxRetries?: number;
+
+  /**
+   * Polling interval in milliseconds.
+   * Default: 100
+   */
+  pollIntervalMs?: number;
 }
 
 /**
@@ -68,22 +79,37 @@ function getBaseUrl(configBaseUrl?: string): string {
 }
 
 /**
+ * Calculate exponential backoff delay with jitter.
+ */
+function calculateBackoffDelay(attempt: number): number {
+  const baseDelay = 1000;
+  const maxDelay = 60000;
+  const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), maxDelay);
+  const jitter = delay * 0.2 * (Math.random() * 2 - 1);
+  return Math.round(delay + jitter);
+}
+
+/**
  * Creates the Queue implementation using Turso/libSQL.
  */
-export function createQueue(config: QueueConfig): Queue {
+export function createQueue(config: QueueConfig): {
+  queue: Queue;
+  start: () => Promise<void>;
+  close: () => Promise<void>;
+} {
   const { client } = config;
   const transport = new JsonTransport();
 
   // Track recently queued idempotency keys with their results (in-memory for speed).
-  // Uses a short TTL to deduplicate concurrent duplicate messages.
   const recentlyQueuedKeys = new Map<
     string,
     { messageId: MessageId; timestamp: number }
   >();
   const IDEMPOTENCY_TTL_MS = config.idempotencyTtlMs ?? 5000;
   const MAX_RETRIES = config.maxRetries ?? 3;
+  const POLL_INTERVAL_MS = config.pollIntervalMs ?? 100;
 
-  // Simple concurrency limiter
+  // Concurrency control
   const maxConcurrency = config.concurrency ?? 20;
   let currentConcurrency = 0;
   const waitQueue: Array<() => void> = [];
@@ -107,7 +133,165 @@ export function createQueue(config: QueueConfig): Queue {
     }
   }
 
-  return {
+  // Worker state
+  let isRunning = false;
+  let isShuttingDown = false;
+  let pollTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Process a single message.
+   */
+  async function processMessage(
+    messageId: MessageId,
+    queueName: ValidQueueName,
+    payload: string,
+    attempt: number
+  ): Promise<void> {
+    const pathname = queueName.startsWith('__wkf_step_') ? 'step' : 'flow';
+
+    try {
+      const response = await fetch(
+        `${getBaseUrl(config.baseUrl)}/.well-known/workflow/v1/${pathname}`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-vqs-queue-name': queueName,
+            'x-vqs-message-id': messageId,
+            'x-vqs-message-attempt': String(attempt),
+          },
+          body: payload,
+        }
+      );
+
+      if (response.ok) {
+        // Mark message as completed
+        await client.execute({
+          sql: `UPDATE queue_messages SET status = 'completed', processed_at = ? WHERE message_id = ?`,
+          args: [new Date().toISOString(), messageId],
+        });
+        return;
+      }
+
+      const text = await response.text();
+
+      // Check for retry request (503 with timeoutSeconds)
+      if (response.status === 503) {
+        try {
+          const { timeoutSeconds } = JSON.parse(text);
+          if (typeof timeoutSeconds === 'number') {
+            // Reschedule without counting as failure
+            const notBefore = new Date(Date.now() + timeoutSeconds * 1000).toISOString();
+            await client.execute({
+              sql: `UPDATE queue_messages SET status = 'pending', not_before = ? WHERE message_id = ?`,
+              args: [notBefore, messageId],
+            });
+            return;
+          }
+        } catch {
+          // Not a valid retry response
+        }
+      }
+
+      // Failed - schedule retry or mark as failed
+      if (attempt >= MAX_RETRIES) {
+        await client.execute({
+          sql: `UPDATE queue_messages SET status = 'failed', processed_at = ?, attempt = ? WHERE message_id = ?`,
+          args: [new Date().toISOString(), attempt, messageId],
+        });
+      } else {
+        const delay = calculateBackoffDelay(attempt);
+        const notBefore = new Date(Date.now() + delay).toISOString();
+        await client.execute({
+          sql: `UPDATE queue_messages SET status = 'pending', not_before = ?, attempt = ? WHERE message_id = ?`,
+          args: [notBefore, attempt + 1, messageId],
+        });
+      }
+
+      console.error('[turso-world] Message processing failed:', {
+        messageId,
+        queueName,
+        status: response.status,
+        attempt,
+      });
+    } catch (err) {
+      // Network error - schedule retry
+      console.error('[turso-world] Network error:', err);
+
+      if (attempt >= MAX_RETRIES) {
+        await client.execute({
+          sql: `UPDATE queue_messages SET status = 'failed', processed_at = ?, attempt = ? WHERE message_id = ?`,
+          args: [new Date().toISOString(), attempt, messageId],
+        });
+      } else {
+        const delay = calculateBackoffDelay(attempt);
+        const notBefore = new Date(Date.now() + delay).toISOString();
+        await client.execute({
+          sql: `UPDATE queue_messages SET status = 'pending', not_before = ?, attempt = ? WHERE message_id = ?`,
+          args: [notBefore, attempt + 1, messageId],
+        });
+      }
+    }
+  }
+
+  /**
+   * Poll for and process pending messages.
+   */
+  async function pollAndProcess(): Promise<void> {
+    if (!isRunning || isShuttingDown) {
+      return;
+    }
+
+    try {
+      const now = new Date().toISOString();
+
+      // Find a pending message that's ready to process
+      const result = await client.execute({
+        sql: `SELECT message_id, queue_name, payload, attempt
+              FROM queue_messages
+              WHERE status = 'pending' AND (not_before IS NULL OR not_before <= ?)
+              ORDER BY created_at ASC
+              LIMIT 1`,
+        args: [now],
+      });
+
+      if (result.rows.length > 0) {
+        const row = result.rows[0];
+        const messageId = row.message_id as MessageId;
+        const queueName = row.queue_name as ValidQueueName;
+        const payload = row.payload as string;
+        const attempt = (row.attempt as number) || 1;
+
+        // Mark as processing
+        const updateResult = await client.execute({
+          sql: `UPDATE queue_messages SET status = 'processing' WHERE message_id = ? AND status = 'pending'`,
+          args: [messageId],
+        });
+
+        // Only process if we successfully claimed it
+        if (updateResult.rowsAffected > 0) {
+          await acquireConcurrency();
+          // Process in background
+          processMessage(messageId, queueName, payload, attempt)
+            .catch((err) => {
+              console.error('[turso-world] Error processing message:', err);
+            })
+            .finally(() => {
+              releaseConcurrency();
+            });
+        }
+      }
+    } catch (err) {
+      console.error('[turso-world] Poll error:', err);
+    }
+
+    // Schedule next poll
+    if (isRunning && !isShuttingDown) {
+      pollTimeout = setTimeout(pollAndProcess, POLL_INTERVAL_MS);
+    }
+  }
+
+  const queue: Queue = {
     /**
      * Returns a unique identifier for this deployment.
      */
@@ -117,6 +301,7 @@ export function createQueue(config: QueueConfig): Queue {
 
     /**
      * Enqueues a message for processing.
+     * Messages are stored in the database and will be processed when start() is called.
      */
     async queue(
       queueName: ValidQueueName,
@@ -137,13 +322,17 @@ export function createQueue(config: QueueConfig): Queue {
       const serialized = transport.serialize(message);
       const nowStr = new Date().toISOString();
 
-      // Insert into database - use INSERT OR IGNORE to handle duplicate idempotency keys
-      // The unique index on idempotency_key ensures no duplicates
+      // Validate queue type
+      if (!queueName.startsWith('__wkf_step_') && !queueName.startsWith('__wkf_workflow_')) {
+        throw new Error(`Unknown queue prefix in: ${queueName}`);
+      }
+
+      // Insert into database
       try {
         await client.execute({
           sql: `INSERT INTO queue_messages
                 (message_id, queue_name, payload, idempotency_key, status, attempt, max_attempts, not_before, created_at)
-                VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+                VALUES (?, ?, ?, ?, 'pending', 1, ?, ?, ?)`,
           args: [
             messageId,
             queueName,
@@ -152,7 +341,7 @@ export function createQueue(config: QueueConfig): Queue {
             MAX_RETRIES,
             nowStr,
             nowStr,
-          ],
+          ] as InValue[],
         });
       } catch (error) {
         // If duplicate idempotency key, find the existing message
@@ -175,7 +364,7 @@ export function createQueue(config: QueueConfig): Queue {
           messageId,
           timestamp: now,
         });
-        // Clean up old entries periodically to prevent memory leaks
+        // Clean up old entries periodically
         if (recentlyQueuedKeys.size > 1000) {
           const cutoff = now - IDEMPOTENCY_TTL_MS;
           for (const [key, value] of recentlyQueuedKeys) {
@@ -185,92 +374,6 @@ export function createQueue(config: QueueConfig): Queue {
           }
         }
       }
-
-      // Determine endpoint based on queue type
-      let pathname: string;
-      if (queueName.startsWith('__wkf_step_')) {
-        pathname = 'step';
-      } else if (queueName.startsWith('__wkf_workflow_')) {
-        pathname = 'flow';
-      } else {
-        throw new Error(`Unknown queue prefix in: ${queueName}`);
-      }
-
-      // Process asynchronously
-      (async () => {
-        await acquireConcurrency();
-
-        try {
-          let retriesLeft = MAX_RETRIES;
-
-          for (let attempt = 1; retriesLeft > 0; attempt++) {
-            retriesLeft--;
-
-            try {
-              const response = await fetch(
-                `${getBaseUrl(config.baseUrl)}/.well-known/workflow/v1/${pathname}`,
-                {
-                  method: 'POST',
-                  headers: {
-                    'content-type': 'application/json',
-                    'x-vqs-queue-name': queueName,
-                    'x-vqs-message-id': messageId,
-                    'x-vqs-message-attempt': String(attempt),
-                  },
-                  body: serialized,
-                }
-              );
-
-              if (response.ok) {
-                // Mark message as completed
-                await client.execute({
-                  sql: `UPDATE queue_messages SET status = 'completed', processed_at = ? WHERE message_id = ?`,
-                  args: [new Date().toISOString(), messageId],
-                });
-                return; // Success
-              }
-
-              const text = await response.text();
-
-              // Check for retry request (503 with timeoutSeconds)
-              if (response.status === 503) {
-                try {
-                  const { timeoutSeconds } = JSON.parse(text);
-                  if (typeof timeoutSeconds === 'number') {
-                    // Wait and retry
-                    await new Promise((r) =>
-                      setTimeout(r, timeoutSeconds * 1000)
-                    );
-                    retriesLeft++; // Don't count this as a failed retry
-                    continue;
-                  }
-                } catch {
-                  // Not a valid retry response
-                }
-              }
-
-              console.error('[turso-world] Message processing failed:', {
-                queueName,
-                status: response.status,
-                text,
-              });
-            } catch (err) {
-              // Network error, retry
-              console.error('[turso-world] Network error:', err);
-            }
-          }
-
-          // Mark as failed after all retries exhausted
-          await client.execute({
-            sql: `UPDATE queue_messages SET status = 'failed', processed_at = ?, attempt = ? WHERE message_id = ?`,
-            args: [new Date().toISOString(), MAX_RETRIES, messageId],
-          });
-
-          console.error('[turso-world] Max retries reached for:', queueName);
-        } finally {
-          releaseConcurrency();
-        }
-      })();
 
       return { messageId };
     },
@@ -289,7 +392,6 @@ export function createQueue(config: QueueConfig): Queue {
         }
       ) => Promise<void | { timeoutSeconds: number }>
     ): (req: Request) => Promise<Response> {
-      // Schema for validating required headers
       const HeaderParser = z.object({
         'x-vqs-queue-name': z.string(),
         'x-vqs-message-id': z.string(),
@@ -297,7 +399,6 @@ export function createQueue(config: QueueConfig): Queue {
       });
 
       return async (req: Request): Promise<Response> => {
-        // Validate headers
         const headers = HeaderParser.safeParse(
           Object.fromEntries(req.headers)
         );
@@ -317,19 +418,15 @@ export function createQueue(config: QueueConfig): Queue {
         const messageId = headers.data['x-vqs-message-id'] as MessageId;
         const attempt = headers.data['x-vqs-message-attempt'];
 
-        // Verify this handler handles this queue type
         if (!queueName.startsWith(prefix)) {
           return Response.json({ error: 'Unhandled queue' }, { status: 400 });
         }
 
-        // Deserialize the message
         const body = await new JsonTransport().deserialize(req.body);
 
         try {
-          // Call the actual handler
           const result = await handler(body, { attempt, queueName, messageId });
 
-          // Check if handler requests a retry
           if (result?.timeoutSeconds) {
             return Response.json(
               { timeoutSeconds: result.timeoutSeconds },
@@ -343,6 +440,57 @@ export function createQueue(config: QueueConfig): Queue {
           return Response.json(String(error), { status: 500 });
         }
       };
+    },
+  };
+
+  return {
+    queue,
+
+    /**
+     * Starts the queue worker that processes pending messages.
+     * Without calling start(), messages are stored but not processed.
+     */
+    async start(): Promise<void> {
+      if (isRunning) {
+        console.warn('[turso-world] Queue already running');
+        return;
+      }
+
+      console.log('[turso-world] Starting queue worker...');
+      isRunning = true;
+      isShuttingDown = false;
+
+      // Start polling
+      pollAndProcess();
+
+      console.log('[turso-world] Queue worker started');
+    },
+
+    /**
+     * Gracefully stops the queue worker.
+     */
+    async close(): Promise<void> {
+      if (!isRunning) {
+        return;
+      }
+
+      console.log('[turso-world] Stopping queue worker...');
+      isShuttingDown = true;
+
+      // Clear poll timeout
+      if (pollTimeout) {
+        clearTimeout(pollTimeout);
+        pollTimeout = null;
+      }
+
+      // Wait for in-flight messages to complete (with timeout)
+      const deadline = Date.now() + 30000;
+      while (currentConcurrency > 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+
+      isRunning = false;
+      console.log('[turso-world] Queue worker stopped');
     },
   };
 }
