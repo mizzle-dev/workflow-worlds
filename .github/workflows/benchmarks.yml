@@ -325,6 +325,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Setup PostgreSQL schema
+        run: pnpm exec workflow-postgres-setup
+        env:
+          WORKFLOW_POSTGRES_URL: "postgres://postgres:postgres@localhost:5432/workflow"
+
       - name: Build workbench
         run: pnpm --filter @workflow-worlds/workbench build
         env:
