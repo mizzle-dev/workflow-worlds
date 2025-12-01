@@ -7,6 +7,10 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -94,25 +98,29 @@ jobs:
           WORKFLOW_TARGET_WORLD: "@workflow-worlds/starter"
 
       - name: Run benchmarks
-        env:
-          DEPLOYMENT_URL: "http://localhost:3000"
-          WORLD_NAME: starter
-          WORKFLOW_TARGET_WORLD: "@workflow-worlds/starter"
         run: |
           cd workbench
           pnpm start &
+          SERVER_PID=$!
+          trap "kill $SERVER_PID 2>/dev/null" EXIT
           echo "Waiting for server to start..."
           sleep 10
           cd ..
           pnpm --filter @workflow-worlds/workbench vitest bench --run --outputJson=bench-results-starter.json
+        env:
+          DEPLOYMENT_URL: "http://localhost:3000"
+          WORLD_NAME: starter
+          WORKFLOW_TARGET_WORLD: "@workflow-worlds/starter"
 
       - name: Render benchmark results
+        if: always()
         uses: ./.github/actions/render-benchmarks
         with:
           benchmark-file: bench-results-starter.json
           world-name: starter
 
       - name: Upload benchmark results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bench-results-starter
@@ -163,26 +171,30 @@ jobs:
           WORKFLOW_MONGODB_URI: "mongodb://localhost:27017/workflow"
 
       - name: Run benchmarks
+        run: |
+          cd workbench
+          pnpm start &
+          SERVER_PID=$!
+          trap "kill $SERVER_PID 2>/dev/null" EXIT
+          echo "Waiting for server to start..."
+          sleep 10
+          cd ..
+          pnpm --filter @workflow-worlds/workbench vitest bench --run --outputJson=bench-results-mongodb.json
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
           WORLD_NAME: mongodb
           WORKFLOW_TARGET_WORLD: "@workflow-worlds/mongodb"
           WORKFLOW_MONGODB_URI: "mongodb://localhost:27017/workflow"
-        run: |
-          cd workbench
-          pnpm start &
-          echo "Waiting for server to start..."
-          sleep 10
-          cd ..
-          pnpm --filter @workflow-worlds/workbench vitest bench --run --outputJson=bench-results-mongodb.json
 
       - name: Render benchmark results
+        if: always()
         uses: ./.github/actions/render-benchmarks
         with:
           benchmark-file: bench-results-mongodb.json
           world-name: mongodb
 
       - name: Upload benchmark results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bench-results-mongodb
@@ -232,27 +244,35 @@ jobs:
           WORKFLOW_TARGET_WORLD: "@workflow-worlds/redis"
           WORKFLOW_REDIS_URI: "redis://localhost:6379"
 
+      - name: Flush Redis
+        run: redis-cli FLUSHALL
+
       - name: Run benchmarks
+        run: |
+          redis-cli FLUSHALL
+          cd workbench
+          pnpm start &
+          SERVER_PID=$!
+          trap "kill $SERVER_PID 2>/dev/null" EXIT
+          echo "Waiting for server to start..."
+          sleep 10
+          cd ..
+          pnpm --filter @workflow-worlds/workbench vitest bench --run --outputJson=bench-results-redis.json
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
           WORLD_NAME: redis
           WORKFLOW_TARGET_WORLD: "@workflow-worlds/redis"
           WORKFLOW_REDIS_URI: "redis://localhost:6379"
-        run: |
-          cd workbench
-          pnpm start &
-          echo "Waiting for server to start..."
-          sleep 10
-          cd ..
-          pnpm --filter @workflow-worlds/workbench vitest bench --run --outputJson=bench-results-redis.json
 
       - name: Render benchmark results
+        if: always()
         uses: ./.github/actions/render-benchmarks
         with:
           benchmark-file: bench-results-redis.json
           world-name: redis
 
       - name: Upload benchmark results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bench-results-redis

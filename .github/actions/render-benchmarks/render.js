@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-const fs = require('fs');
+import fs from 'fs';
+import path from 'path';
 
 const [, , benchmarkFile, worldName] = process.argv;
 
@@ -8,8 +9,6 @@ if (!benchmarkFile || !worldName) {
   console.error('Usage: render.js <benchmark-file> <world-name>');
   process.exit(1);
 }
-
-const path = require('path');
 
 // Try to load workflow timing data
 let workflowTimings = null;
