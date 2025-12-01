@@ -242,13 +242,27 @@ jobs:
 
       - name: Run benchmarks
         run: |
+          echo "Flushing Redis..."
           echo "FLUSHALL" | nc localhost 6379 || true
+          sleep 1
+
           cd workbench
+          echo "Starting server..."
           pnpm start &
           SERVER_PID=$!
           trap "kill $SERVER_PID 2>/dev/null" EXIT
+
           echo "Waiting for server to start..."
-          sleep 10
+          for i in {1..30}; do
+            if curl -s http://localhost:3000/health > /dev/null 2>&1; then
+              echo "Server is ready after ${i}s"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 1
+          done
+
+          echo "Running vitest benchmarks..."
           npx vitest bench --run --outputJson=../bench-results-redis.json
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
