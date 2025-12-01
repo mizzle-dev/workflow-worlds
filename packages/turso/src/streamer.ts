@@ -248,12 +248,6 @@ export function createStreamer(config: StreamerConfig): Streamer {
                 }
               }
 
-              // Check if we already received EOF while loading
-              const lastChunk = existingChunks[existingChunks.length - 1];
-              if (lastChunk?.eof) {
-                cleanup();
-                controller.close();
-              }
             } catch (error) {
               cleanup();
               controller.error(error);
