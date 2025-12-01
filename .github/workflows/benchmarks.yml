@@ -105,8 +105,7 @@ jobs:
           trap "kill $SERVER_PID 2>/dev/null" EXIT
           echo "Waiting for server to start..."
           sleep 10
-          cd ..
-          pnpm --filter @workflow-worlds/workbench vitest bench --run --outputJson=bench-results-starter.json
+          npx vitest bench --run --outputJson=../bench-results-starter.json
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
           WORLD_NAME: starter
@@ -177,8 +176,7 @@ jobs:
           trap "kill $SERVER_PID 2>/dev/null" EXIT
           echo "Waiting for server to start..."
           sleep 10
-          cd ..
-          pnpm --filter @workflow-worlds/workbench vitest bench --run --outputJson=bench-results-mongodb.json
+          npx vitest bench --run --outputJson=../bench-results-mongodb.json
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
           WORLD_NAME: mongodb
@@ -251,8 +249,7 @@ jobs:
           trap "kill $SERVER_PID 2>/dev/null" EXIT
           echo "Waiting for server to start..."
           sleep 10
-          cd ..
-          pnpm --filter @workflow-worlds/workbench vitest bench --run --outputJson=bench-results-redis.json
+          npx vitest bench --run --outputJson=../bench-results-redis.json
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
           WORLD_NAME: redis
