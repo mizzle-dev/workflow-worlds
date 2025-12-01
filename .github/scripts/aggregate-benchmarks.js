@@ -26,6 +26,7 @@ const worldConfig = {
   starter: { emoji: '💾', label: 'Starter (in-memory)' },
   mongodb: { emoji: '🍃', label: 'MongoDB' },
   redis: { emoji: '🔴', label: 'Redis' },
+  turso: { emoji: '🗄️', label: 'Turso' },
 };
 
 // Format milliseconds as seconds
@@ -182,7 +183,7 @@ function getWorlds(data) {
   }
 
   // Sort: local, postgres, vercel, starter, mongodb, redis
-  const worldOrder = ['local', 'postgres', 'vercel', 'starter', 'mongodb', 'redis'];
+  const worldOrder = ['local', 'postgres', 'vercel', 'starter', 'mongodb', 'redis', 'turso'];
   return [...worlds].sort(
     (a, b) => worldOrder.indexOf(a) - worldOrder.indexOf(b)
   );

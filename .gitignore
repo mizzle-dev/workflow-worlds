@@ -27,6 +27,10 @@ pnpm-debug.log*
 
 # Test
 coverage/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
 
 # SWC
 .swc/
