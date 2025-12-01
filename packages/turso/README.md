@@ -164,6 +164,7 @@ await world.start();
 - **TTL-Based Idempotency**: 5-second window to catch network retries
 - **Exponential Backoff**: Failures retry with increasing delays (1s -> 60s max)
 - **Graceful Shutdown**: Waits for in-flight messages before stopping
+- **Atomic Claiming**: Uses write transactions to prevent race conditions
 
 ### Lazy Initialization
 
@@ -219,6 +220,8 @@ The implementation uses `WorkflowAPIError` from `@workflow/errors` for consisten
 5. **Graceful Shutdown**: The queue waits up to 30 seconds for in-flight messages during shutdown
 
 6. **Monitoring**: Monitor polling performance and queue_messages table growth
+
+7. **SQLite Concurrency**: WAL (Write-Ahead Logging) mode is enabled automatically for better concurrent access. A 5-second busy timeout is configured to handle lock contention gracefully
 
 ## License
 

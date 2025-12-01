@@ -44,6 +44,7 @@ npm create @workflow-worlds my-world
 | [@workflow-worlds/starter](./packages/starter) | In-memory World template for building custom implementations | ✅ Ready |
 | [@workflow-worlds/mongodb](./packages/mongodb) | MongoDB World using native driver | ✅ Ready |
 | [@workflow-worlds/redis](./packages/redis) | Redis World using BullMQ for queues, Redis Streams for output | ✅ Ready |
+| [@workflow-worlds/turso](./packages/turso) | Turso/libSQL World for embedded or remote SQLite databases | ✅ Ready |
 
 ## Documentation
 
