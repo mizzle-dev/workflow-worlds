@@ -47,6 +47,12 @@ export interface QueueConfig {
    * Default: 60000 (1 minute)
    */
   idempotencyTtlMs?: number;
+
+  /**
+   * Timeout for HTTP calls to workflow endpoints in milliseconds.
+   * Default: 300000 (5 minutes)
+   */
+  httpTimeoutMs?: number;
 }
 
 /**
@@ -75,6 +81,7 @@ export async function createQueue(options: {
   const concurrency = config.concurrency ?? 20;
   const maxRetries = config.maxRetries ?? 3;
   const idempotencyTtlMs = config.idempotencyTtlMs ?? 60000;
+  const httpTimeoutMs = config.httpTimeoutMs ?? 300000; // 5 minutes default
 
   // BullMQ connection - requires maxRetriesPerRequest: null
   const connection: ConnectionOptions = {
@@ -126,6 +133,7 @@ export async function createQueue(options: {
             'x-vqs-message-attempt': String(job.attemptsMade + 1),
           },
           body: JSON.stringify(job.data),
+          signal: AbortSignal.timeout(httpTimeoutMs),
         });
 
         if (response.ok) {
