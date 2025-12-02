@@ -42,3 +42,6 @@ export type { HookTestOptions } from './hooks.js';
 
 export { streamerTests } from './streamer.js';
 export type { StreamerTestOptions } from './streamer.js';
+
+export { outputPreservationTests } from './output-preservation.js';
+export type { OutputPreservationTestOptions } from './output-preservation.js';

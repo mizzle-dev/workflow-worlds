@@ -14,6 +14,7 @@ import {
   serializationTests,
   hookCleanupTests,
   streamerTests,
+  outputPreservationTests,
 } from '@workflow-worlds/testing';
 import { afterAll, beforeAll } from 'vitest';
 import { Redis } from 'ioredis';
@@ -111,3 +112,4 @@ const createStreamer = async () => {
 serializationTests({ createStorage });
 hookCleanupTests({ createStorage });
 streamerTests({ createStreamer });
+outputPreservationTests({ createStorage });

@@ -17,6 +17,7 @@ import {
   serializationTests,
   hookCleanupTests,
   streamerTests,
+  outputPreservationTests,
 } from '@workflow-worlds/testing';
 import { afterAll, beforeAll } from 'vitest';
 
@@ -104,3 +105,4 @@ const createStreamer = async () => {
 serializationTests({ createStorage });
 hookCleanupTests({ createStorage });
 streamerTests({ createStreamer });
+outputPreservationTests({ createStorage });

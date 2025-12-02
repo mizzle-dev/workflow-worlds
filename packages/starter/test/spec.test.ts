@@ -14,6 +14,7 @@ import {
   queueTests,
   hookCleanupTests,
   streamerTests,
+  outputPreservationTests,
 } from '@workflow-worlds/testing';
 
 // Get the absolute path to the built world module
@@ -54,3 +55,4 @@ serializationTests({ createStorage });
 hookCleanupTests({ createStorage });
 queueTests({ createQueue });
 streamerTests({ createStreamer });
+outputPreservationTests({ createStorage });
