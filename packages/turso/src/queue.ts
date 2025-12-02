@@ -471,14 +471,11 @@ export function createQueue(config: QueueConfig): {
         return;
       }
 
-      console.log('[turso-world] Starting queue worker...');
       isRunning = true;
       isShuttingDown = false;
 
       // Start polling
       pollAndProcess();
-
-      console.log('[turso-world] Queue worker started');
     },
 
     /**
@@ -489,7 +486,6 @@ export function createQueue(config: QueueConfig): {
         return;
       }
 
-      console.log('[turso-world] Stopping queue worker...');
       isShuttingDown = true;
 
       // Clear poll timeout
@@ -505,7 +501,6 @@ export function createQueue(config: QueueConfig): {
       }
 
       isRunning = false;
-      console.log('[turso-world] Queue worker stopped');
     },
   };
 }

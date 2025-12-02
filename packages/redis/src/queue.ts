@@ -275,8 +275,6 @@ export async function createQueue(options: {
       return;
     }
 
-    console.log('[redis-world] Starting queue workers...');
-
     // Create workers for both queue types
     workflowWorker = new Worker('__wkf_workflow', createProcessor('flow'), {
       connection,
@@ -304,15 +302,12 @@ export async function createQueue(options: {
     ]);
 
     isStarted = true;
-    console.log('[redis-world] Queue workers started');
   }
 
   /**
    * Gracefully closes the queue workers and connections.
    */
   async function close(): Promise<void> {
-    console.log('[redis-world] Closing queue workers...');
-
     // Close workers first (gracefully waits for in-progress jobs)
     await Promise.all([
       workflowWorker?.close(),
@@ -326,7 +321,6 @@ export async function createQueue(options: {
     ]);
 
     isStarted = false;
-    console.log('[redis-world] Queue workers closed');
   }
 
   return { queue, start, close };
