@@ -9,6 +9,7 @@ import { EventEmitter } from 'node:events';
 import type { Streamer } from '@workflow/world';
 import { MongoClient } from 'mongodb';
 import { monotonicFactory } from 'ulid';
+import { debug } from './utils.js';
 
 const generateUlid = monotonicFactory();
 
@@ -114,7 +115,7 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
         // Only log once and disable change streams
         if (!changeStreamDisabled) {
           changeStreamDisabled = true;
-          console.warn('[mongodb-world] Change streams not available (replica set required), using in-process events only');
+          debug('Change streams not available (replica set required), using in-process events only');
           try {
             await changeStream.close();
           } catch {
@@ -123,8 +124,8 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
           changeStream = null;
         }
       });
-    } catch (error) {
-      console.warn('[mongodb-world] Change streams not available, using in-process events only');
+    } catch {
+      debug('Change streams not available, using in-process events only');
     }
   }
 
