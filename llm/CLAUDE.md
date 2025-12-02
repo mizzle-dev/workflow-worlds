@@ -190,7 +190,7 @@ const useFeature = config.useFeature
 
 ## Debug Logging
 
-All worlds support configurable debug logging via `WORKFLOW_DEBUG`. Logs are written to stderr (not stdout) to avoid interfering with CLI JSON parsing.
+All worlds **must** implement configurable debug logging via `WORKFLOW_DEBUG`. Logs must be written to stderr (not stdout) to avoid interfering with CLI JSON parsing.
 
 ```bash
 # Enable all debug output
@@ -203,13 +203,57 @@ WORKFLOW_DEBUG=mongodb-world,turso-world pnpm test
 
 Available namespaces: `redis-world`, `mongodb-world`, `turso-world`, `starter-world`, `workbench`
 
-When implementing a new world, use the debug logger pattern from `packages/*/src/utils.ts`:
+### Implementing Debug Logging in New Worlds
+
+When building a new world, create `src/utils.ts` with the debug logger:
+
+```typescript
+/**
+ * Creates a debug logger that writes to stderr when enabled.
+ */
+function createDebugLogger(namespace: string) {
+  return (...args: unknown[]) => {
+    const debug = process.env.WORKFLOW_DEBUG;
+    if (!debug) return;
+
+    const enabled =
+      debug === '1' ||
+      debug === 'true' ||
+      debug === '*' ||
+      debug.split(',').some((ns) => ns.trim() === namespace);
+
+    if (!enabled) return;
+
+    const timestamp = new Date().toISOString();
+    const prefix = `[${timestamp}] [${namespace}]`;
+    const message = args
+      .map((arg) =>
+        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+      )
+      .join(' ');
+
+    process.stderr.write(`${prefix} ${message}\n`);
+  };
+}
+
+export const debug = createDebugLogger('{backend}-world');
+```
+
+Then import and use throughout your implementation:
 ```typescript
 import { debug } from './utils.js';
 
+// In index.ts
+debug('Creating world with config:', config);
+debug('Initialization complete');
+
+// In queue.ts
 debug('Starting queue processing...');
 debug('Recovered', count, 'stuck messages');
+debug('Queue shutdown complete');
 ```
+
+**IMPORTANT:** Never use `console.log` or `console.warn` in world implementations - they write to stdout/stderr and can corrupt CLI JSON output. Always use the debug logger instead.
 
 ## Robust Queue Implementation
 

@@ -328,7 +328,7 @@ const mongoUri = config.mongoUrl
 
 ### Debug Logging
 
-All worlds support configurable debug logging via `WORKFLOW_DEBUG`. Logs are written to stderr (not stdout) to avoid interfering with CLI JSON parsing.
+All worlds **must** implement configurable debug logging via `WORKFLOW_DEBUG`. Logs must be written to stderr (not stdout) to avoid interfering with CLI JSON parsing.
 
 ```bash
 # Enable all debug output
@@ -340,6 +340,47 @@ WORKFLOW_DEBUG=mongodb-world,turso-world pnpm test
 ```
 
 Available namespaces: `redis-world`, `mongodb-world`, `turso-world`, `starter-world`, `workbench`
+
+**When building a new world**, create `src/utils.ts` with a debug logger:
+
+```typescript
+function createDebugLogger(namespace: string) {
+  return (...args: unknown[]) => {
+    const debug = process.env.WORKFLOW_DEBUG;
+    if (!debug) return;
+
+    const enabled =
+      debug === '1' ||
+      debug === 'true' ||
+      debug === '*' ||
+      debug.split(',').some((ns) => ns.trim() === namespace);
+
+    if (!enabled) return;
+
+    const timestamp = new Date().toISOString();
+    const prefix = `[${timestamp}] [${namespace}]`;
+    const message = args
+      .map((arg) =>
+        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+      )
+      .join(' ');
+
+    process.stderr.write(`${prefix} ${message}\n`);
+  };
+}
+
+export const debug = createDebugLogger('{backend}-world');
+```
+
+Then import and use in your implementation files:
+```typescript
+import { debug } from './utils.js';
+
+debug('Creating world with config:', config);
+debug('Queue processing started');
+```
+
+**IMPORTANT:** Never use `console.log` or `console.warn` - they corrupt CLI JSON output. Use the debug logger instead.
 
 ### Making Options Configurable
 
