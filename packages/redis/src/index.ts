@@ -74,11 +74,6 @@ export function createWorld(config: RedisWorldConfig = {}): World {
   // Use provided client or create/get cached one
   const client = config.client ?? getOrCreateClient(redisUrl);
 
-  console.log('[redis-world] Creating world with:', {
-    redisUrl: redisUrl.replace(/\/\/[^:]*:[^@]*@/, '//***:***@'), // Hide credentials
-    keyPrefix: config.keyPrefix ?? 'workflow',
-  });
-
   // Track initialization
   let initPromise: Promise<{
     storage: Awaited<ReturnType<typeof createStorage>>['storage'];
@@ -93,8 +88,6 @@ export function createWorld(config: RedisWorldConfig = {}): World {
   function ensureInitialized() {
     if (!initPromise) {
       initPromise = (async () => {
-        console.log('[redis-world] Initializing components...');
-
         // Wait for Redis connection
         if (client.status !== 'ready') {
           await new Promise<void>((resolve, reject) => {
@@ -111,8 +104,6 @@ export function createWorld(config: RedisWorldConfig = {}): World {
           }),
           createStreamer({ redis: client, config }),
         ]);
-
-        console.log('[redis-world] Initialization complete.');
 
         return {
           storage: storageResult.storage,

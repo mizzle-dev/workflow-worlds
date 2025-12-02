@@ -66,12 +66,6 @@ export function createWorld(config: MongoDBWorldConfig = {}): World {
 
   const client = getOrCreateClient(mongoUri);
 
-  console.log('[mongodb-world] Creating world with:', {
-    mongoUri: mongoUri.replace(/\/\/[^:]+:[^@]+@/, '//***:***@'), // Hide credentials
-    databaseName,
-    useChangeStreams,
-  });
-
   // Override config with resolved values
   const resolvedConfig = { ...config, useChangeStreams };
 
@@ -88,17 +82,13 @@ export function createWorld(config: MongoDBWorldConfig = {}): World {
   function ensureInitialized() {
     if (!initPromise) {
       initPromise = (async () => {
-        console.log('[mongodb-world] Connecting to MongoDB...');
         await client.connect();
-        console.log('[mongodb-world] Connected. Initializing components...');
 
         const [storageResult, queueResult, streamerResult] = await Promise.all([
           createStorage({ ...resolvedConfig, client, databaseName }),
           createQueue({ ...resolvedConfig, client, databaseName }),
           createStreamer({ ...resolvedConfig, client, databaseName }),
         ]);
-
-        console.log('[mongodb-world] Initialization complete.');
 
         return {
           storage: storageResult.storage,

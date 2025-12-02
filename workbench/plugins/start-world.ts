@@ -5,18 +5,15 @@ import { defineNitroPlugin } from 'nitro/~internal/runtime/plugin';
 export default defineNitroPlugin(async () => {
   const targetWorld = process.env.WORKFLOW_TARGET_WORLD;
   if (targetWorld) {
-    console.log(`Starting World: ${targetWorld}...`);
     try {
       const { getWorld } = await import('workflow/runtime');
       const world = getWorld();
       if (world.start) {
         await world.start();
-        console.log(`World ${targetWorld} started successfully`);
       }
     } catch (error) {
+      // Log to stderr to avoid interfering with CLI JSON output
       console.error(`Failed to start world ${targetWorld}:`, error);
     }
-  } else {
-    console.log('No WORKFLOW_TARGET_WORLD set, using default world');
   }
 });
