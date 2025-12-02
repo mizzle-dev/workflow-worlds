@@ -16,6 +16,7 @@ import type {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
+import { debug } from './utils.js';
 
 const generateUlid = monotonicFactory();
 
@@ -56,6 +57,11 @@ function getBaseUrl(configBaseUrl?: string): string {
  * TODO: Replace the in-memory queue with your queue system.
  */
 export function createQueue(config: QueueConfig = {}): Queue {
+  debug('Creating queue with config:', {
+    baseUrl: config.baseUrl ?? 'default',
+    concurrency: config.concurrency ?? 20,
+  });
+
   const transport = new JsonTransport();
 
   // Track recently queued idempotency keys with their results.

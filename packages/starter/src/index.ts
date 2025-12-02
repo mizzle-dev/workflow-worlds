@@ -19,6 +19,7 @@ import type { QueueConfig } from './queue.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import type { StreamerConfig } from './streamer.js';
+import { debug } from './utils.js';
 
 /**
  * Configuration for the starter world.
@@ -44,9 +45,13 @@ export interface StarterWorldConfig extends QueueConfig, StreamerConfig {
  * - streamer.ts - Use real-time infrastructure (Redis Streams, etc.)
  */
 export function createWorld(config: StarterWorldConfig = {}): World {
+  debug('Creating world with config:', config);
+
   const storage = createStorage();
   const queue = createQueue(config);
   const streamer = createStreamer(config);
+
+  debug('Initialization complete');
 
   return {
     // Spread all storage methods
