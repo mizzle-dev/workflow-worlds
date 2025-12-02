@@ -35,6 +35,9 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.1
+      '@workflow-worlds/testing':
+        specifier: workspace:*
+        version: link:../testing
       '@workflow/world-testing':
         specifier: 4.0.1-beta.23
         version: 4.0.1-beta.23(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
@@ -72,6 +75,9 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.1
+      '@workflow-worlds/testing':
+        specifier: workspace:*
+        version: link:../testing
       '@workflow/world-testing':
         specifier: 4.0.1-beta.23
         version: 4.0.1-beta.23(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
@@ -103,9 +109,31 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.1
+      '@workflow-worlds/testing':
+        specifier: workspace:*
+        version: link:../testing
       '@workflow/world-testing':
         specifier: 4.0.1-beta.23
         version: 4.0.1-beta.23(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1)
+
+  packages/testing:
+    dependencies:
+      '@workflow/errors':
+        specifier: 4.0.1-beta.6
+        version: 4.0.1-beta.6
+      '@workflow/world':
+        specifier: 4.0.1-beta.7
+        version: 4.0.1-beta.7(zod@4.1.13)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.1
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -140,6 +168,9 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.1
+      '@workflow-worlds/testing':
+        specifier: workspace:*
+        version: link:../testing
       '@workflow/world-testing':
         specifier: 4.0.1-beta.23
         version: 4.0.1-beta.23(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.3)(vitest@3.2.4(@types/node@22.19.1)(jiti@2.6.1)(yaml@2.8.1))
