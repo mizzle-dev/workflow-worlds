@@ -1,6 +1,6 @@
 {
   "name": "@workflow-worlds/redis",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Redis World implementation for Workflow DevKit using BullMQ",
   "author": "Dustin Townsend",
   "license": "MIT",
