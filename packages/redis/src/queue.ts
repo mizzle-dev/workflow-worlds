@@ -17,6 +17,7 @@ import type {
   QueuePrefix,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { debug } from './utils.js';
 
 const generateUlid = monotonicFactory();
 
@@ -275,6 +276,8 @@ export async function createQueue(options: {
       return;
     }
 
+    debug('Starting queue workers...');
+
     // Create workers for both queue types
     workflowWorker = new Worker('__wkf_workflow', createProcessor('flow'), {
       connection,
@@ -302,12 +305,15 @@ export async function createQueue(options: {
     ]);
 
     isStarted = true;
+    debug('Queue workers started');
   }
 
   /**
    * Gracefully closes the queue workers and connections.
    */
   async function close(): Promise<void> {
+    debug('Closing queue workers...');
+
     // Close workers first (gracefully waits for in-progress jobs)
     await Promise.all([
       workflowWorker?.close(),
@@ -321,6 +327,7 @@ export async function createQueue(options: {
     ]);
 
     isStarted = false;
+    debug('Queue workers closed');
   }
 
   return { queue, start, close };

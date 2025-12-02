@@ -20,6 +20,7 @@ import type {
 import type { Collection, ChangeStream, MongoClient } from 'mongodb';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
+import { debug } from './utils.js';
 
 const generateUlid = monotonicFactory();
 
@@ -610,6 +611,9 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
       }
     );
 
+    if (result.modifiedCount > 0) {
+      debug(`Recovered ${result.modifiedCount} stuck messages`);
+    }
   }
 
   // =========================================================================
@@ -625,6 +629,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
     return {
       async start() {
         running = true;
+        debug('Starting polling watcher');
 
         while (running && !state.isShuttingDown) {
           try {
@@ -678,6 +683,8 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
 
     return {
       async start() {
+        debug('Starting Change Stream watcher');
+
         // Watch for new pending messages or status changes to pending
         stream = messagesCollection.watch(
           [
@@ -763,9 +770,11 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
     const supportsChangeStreams = await detectChangeStreamSupport(messagesCollection);
 
     if (supportsChangeStreams) {
+      debug('Change Streams supported - using hybrid mode');
       return createChangeStreamWatcher();
     }
 
+    debug('Change Streams not supported - using polling mode');
     return createPollingWatcher();
   }
 
@@ -916,10 +925,11 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
 
     async start(): Promise<void> {
       if (state.isRunning) {
-        console.warn('[mongodb-world] Queue already running');
+        debug('Queue already running');
         return;
       }
 
+      debug('Starting queue processing...');
       state.isRunning = true;
       state.isShuttingDown = false;
 
@@ -940,6 +950,8 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
           console.error('[mongodb-world] Watcher error:', err);
         }
       });
+
+      debug('Queue processing started');
     },
 
     async close(): Promise<void> {
@@ -947,6 +959,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
         return;
       }
 
+      debug('Shutting down queue...');
       state.isShuttingDown = true;
 
       // Stop recovery interval
@@ -962,11 +975,13 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
       // Wait for in-flight messages with timeout
       const deadline = Date.now() + shutdownTimeoutMs;
       while (state.inflightMessages.size > 0 && Date.now() < deadline) {
+        debug(`Waiting for ${state.inflightMessages.size} in-flight messages...`);
         await sleep(100).catch(() => {});
       }
 
       // Abort and release locks for remaining messages
       for (const [messageId, ctx] of state.inflightMessages) {
+        debug(`Force-releasing lock for: ${messageId}`);
         ctx.abortController.abort();
         await releaseLock(messageId as MessageId, ctx.lockToken).catch(() => {});
       }
@@ -978,6 +993,8 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
       if (!config.client) {
         await client.close();
       }
+
+      debug('Queue shutdown complete');
     },
   };
 }

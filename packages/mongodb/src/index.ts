@@ -9,6 +9,7 @@ import { MongoClient } from 'mongodb';
 import { createQueue, type QueueConfig } from './queue.js';
 import { createStorage, type MongoStorageConfig } from './storage.js';
 import { createStreamer, type StreamerConfig } from './streamer.js';
+import { debug } from './utils.js';
 
 // Module-level client cache to share connections across multiple createWorld() calls
 const clientCache = new Map<string, MongoClient>();
@@ -66,6 +67,12 @@ export function createWorld(config: MongoDBWorldConfig = {}): World {
 
   const client = getOrCreateClient(mongoUri);
 
+  debug('Creating world with:', {
+    mongoUri: mongoUri.replace(/\/\/[^:]+:[^@]+@/, '//***:***@'), // Hide credentials
+    databaseName,
+    useChangeStreams,
+  });
+
   // Override config with resolved values
   const resolvedConfig = { ...config, useChangeStreams };
 
@@ -82,13 +89,17 @@ export function createWorld(config: MongoDBWorldConfig = {}): World {
   function ensureInitialized() {
     if (!initPromise) {
       initPromise = (async () => {
+        debug('Connecting to MongoDB...');
         await client.connect();
+        debug('Connected. Initializing components...');
 
         const [storageResult, queueResult, streamerResult] = await Promise.all([
           createStorage({ ...resolvedConfig, client, databaseName }),
           createQueue({ ...resolvedConfig, client, databaseName }),
           createStreamer({ ...resolvedConfig, client, databaseName }),
         ]);
+
+        debug('Initialization complete');
 
         return {
           storage: storageResult.storage,
