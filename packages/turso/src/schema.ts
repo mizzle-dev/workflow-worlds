@@ -2,10 +2,12 @@
  * Database Schema for Turso World
  *
  * Defines SQL tables for workflow runs, steps, events, hooks, queue messages, and stream chunks.
- * Uses JSON columns for flexible data storage and indexed columns for efficient querying.
+ * Uses CBOR-encoded columns for type-preserving data storage (Date, undefined, etc.)
+ * and indexed columns for efficient querying.
  */
 
 import type { Client } from '@libsql/client';
+import { encode as cborEncode, decode as cborDecode } from 'cbor-x';
 
 /**
  * SQL schema for all tables.
@@ -140,26 +142,43 @@ export async function initializeSchema(client: Client): Promise<void> {
   }
 }
 
+// CBOR prefix to distinguish from legacy JSON data
+const CBOR_PREFIX = 'cbor:';
+
 /**
- * Helper to serialize values to JSON for storage.
- * Handles undefined, null, and objects.
+ * Helper to serialize values using CBOR for storage.
+ * CBOR preserves Date, undefined, Map, Set, BigInt types automatically.
+ * Uses base64 encoding with 'cbor:' prefix for TEXT column storage.
  */
 export function toJson(value: unknown): string | null {
   if (value === undefined || value === null) {
     return null;
   }
-  return JSON.stringify(value);
+  const buffer = cborEncode(value);
+  return CBOR_PREFIX + Buffer.from(buffer).toString('base64');
 }
 
 /**
- * Helper to deserialize JSON from storage.
+ * Helper to deserialize CBOR/JSON from storage.
+ * Supports both CBOR (new) and JSON (legacy) formats.
  * Returns undefined for null values.
  */
 export function fromJson<T>(value: string | null): T | undefined {
   if (value === null || value === undefined) {
     return undefined;
   }
-  return JSON.parse(value) as T;
+  // CBOR-encoded data (new format)
+  if (value.startsWith(CBOR_PREFIX)) {
+    const base64 = value.slice(CBOR_PREFIX.length);
+    const buffer = Buffer.from(base64, 'base64');
+    return cborDecode(buffer) as T;
+  }
+  // Legacy JSON data - parse with JSON
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

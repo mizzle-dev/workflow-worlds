@@ -35,6 +35,7 @@
     "@workflow/errors": "4.0.1-beta.6",
     "@workflow/world": "4.0.1-beta.7",
     "bullmq": "^5.34.0",
+    "cbor-x": "1.6.0",
     "ioredis": "^5.4.2",
     "ulid": "^2.3.0"
   },

@@ -136,17 +136,12 @@ function rowToStep(row: Row): Step {
 
 /**
  * Converts a database row to an Event object.
+ * CBOR automatically preserves Date types in eventData, no manual conversion needed.
  */
 function rowToEvent(row: Row): Event {
   const payload = fromJson<Record<string, unknown>>(
     row.payload as string | null
   ) ?? {};
-
-  // Convert eventData.resumeAt back to Date for wait_created events
-  const eventData = payload.eventData as Record<string, unknown> | undefined;
-  if (eventData?.resumeAt && typeof eventData.resumeAt === 'string') {
-    eventData.resumeAt = new Date(eventData.resumeAt);
-  }
 
   const baseEvent = {
     eventId: row.event_id as string,

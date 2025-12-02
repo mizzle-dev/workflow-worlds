@@ -52,10 +52,13 @@ importers:
         version: 4.0.1-beta.6
       '@workflow/world':
         specifier: 4.0.1-beta.7
-        version: 4.0.1-beta.7(zod@4.1.13)
+        version: 4.0.1-beta.7(zod@4.1.11)
       bullmq:
         specifier: ^5.34.0
         version: 5.65.0
+      cbor-x:
+        specifier: 1.6.0
+        version: 1.6.0
       ioredis:
         specifier: ^5.4.2
         version: 5.8.2
@@ -124,6 +127,9 @@ importers:
       '@workflow/world':
         specifier: 4.0.1-beta.7
         version: 4.0.1-beta.7(zod@4.1.13)
+      cbor-x:
+        specifier: 1.6.0
+        version: 1.6.0
       ulid:
         specifier: ^2.3.0
         version: 2.4.0

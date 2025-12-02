@@ -30,6 +30,8 @@ import {
   deserializeFromRedis,
   ulidToScore,
   deepClone,
+  toCbor,
+  fromCbor,
 } from './utils.js';
 
 const generateUlid = monotonicFactory();
@@ -500,7 +502,8 @@ export async function createStorage(options: {
           createdAt: now,
         };
 
-        const serialized = JSON.stringify(event);
+        // Use CBOR for type-preserving serialization (Date, etc.)
+        const serialized = toCbor(event);
 
         const pipeline = redis.pipeline();
         // Store event in sorted set (member is the full event JSON)
@@ -529,19 +532,15 @@ export async function createStorage(options: {
         let cursorScore: number | undefined;
         if (cursor) {
           // Need to find the score for this cursor (eventId)
-          // We stored the full JSON, so we need to scan
+          // We stored the full CBOR/JSON, so we need to scan
           const allEvents = await redis.zrange(indexKey, 0, -1, 'WITHSCORES');
           for (let i = 0; i < allEvents.length; i += 2) {
-            const eventJson = allEvents[i];
+            const eventData = allEvents[i];
             const score = allEvents[i + 1];
-            try {
-              const event = JSON.parse(eventJson);
-              if (event.eventId === cursor) {
-                cursorScore = Number(score);
-                break;
-              }
-            } catch {
-              // Skip invalid JSON
+            const event = fromCbor<Event>(eventData);
+            if (event?.eventId === cursor) {
+              cursorScore = Number(score);
+              break;
             }
           }
         }
@@ -593,21 +592,12 @@ export async function createStorage(options: {
         const hasMore = eventJsons.length > limit;
         const resultJsons = eventJsons.slice(0, limit);
 
+        // Deserialize events using CBOR (with JSON fallback for legacy data)
         const data: Event[] = [];
-        for (const json of resultJsons) {
-          try {
-            const event = JSON.parse(json);
-            // Convert createdAt back to Date
-            if (event.createdAt) {
-              event.createdAt = new Date(event.createdAt);
-            }
-            // Convert eventData.resumeAt back to Date for wait_created events
-            if (event.eventData?.resumeAt) {
-              event.eventData.resumeAt = new Date(event.eventData.resumeAt);
-            }
+        for (const encoded of resultJsons) {
+          const event = fromCbor<Event>(encoded);
+          if (event) {
             data.push(event);
-          } catch {
-            // Skip invalid JSON
           }
         }
 
@@ -636,20 +626,12 @@ export async function createStorage(options: {
         const hasMore = eventJsons.length > limit;
         const resultJsons = eventJsons.slice(0, limit);
 
+        // Deserialize events using CBOR (with JSON fallback for legacy data)
         const data: Event[] = [];
-        for (const json of resultJsons) {
-          try {
-            const event = JSON.parse(json);
-            if (event.createdAt) {
-              event.createdAt = new Date(event.createdAt);
-            }
-            // Convert eventData.resumeAt back to Date for wait_created events
-            if (event.eventData?.resumeAt) {
-              event.eventData.resumeAt = new Date(event.eventData.resumeAt);
-            }
+        for (const encoded of resultJsons) {
+          const event = fromCbor<Event>(encoded);
+          if (event) {
             data.push(event);
-          } catch {
-            // Skip invalid JSON
           }
         }
 

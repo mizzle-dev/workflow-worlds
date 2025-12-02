@@ -33,6 +33,7 @@
     "@workflow/errors": "4.0.1-beta.6",
     "@workflow/world": "4.0.1-beta.7",
     "@vercel/queue": "^0.0.0-alpha.29",
+    "cbor-x": "1.6.0",
     "ulid": "^2.3.0",
     "zod": "^4.1.11"
   },
