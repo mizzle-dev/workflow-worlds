@@ -529,7 +529,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
         if (response.ok) {
           const success = await completeMessage(msg.messageId, lockToken);
           if (!success) {
-            console.warn('[mongodb-world] Lock lost during completion:', msg.messageId);
+            debug('Lock lost during completion:', msg.messageId);
           }
           return;
         }
