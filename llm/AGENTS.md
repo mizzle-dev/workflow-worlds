@@ -324,6 +324,22 @@ const mongoUri = config.mongoUrl
 | `WORKFLOW_MONGODB_URI` | MongoDB connection | `mongodb://...` |
 | `WORKFLOW_REDIS_URL` | Redis connection | `redis://...` |
 | `WORKFLOW_MONGODB_CHANGE_STREAMS` | Enable/disable change streams | `true` or `false` |
+| `WORKFLOW_DEBUG` | Enable debug logging to stderr | `1`, `redis-world`, `mongodb-world,turso-world` |
+
+### Debug Logging
+
+All worlds support configurable debug logging via `WORKFLOW_DEBUG`. Logs are written to stderr (not stdout) to avoid interfering with CLI JSON parsing.
+
+```bash
+# Enable all debug output
+WORKFLOW_DEBUG=1 pnpm test
+
+# Enable specific worlds
+WORKFLOW_DEBUG=redis-world pnpm test
+WORKFLOW_DEBUG=mongodb-world,turso-world pnpm test
+```
+
+Available namespaces: `redis-world`, `mongodb-world`, `turso-world`, `starter-world`, `workbench`
 
 ### Making Options Configurable
 

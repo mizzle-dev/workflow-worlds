@@ -188,6 +188,29 @@ const useFeature = config.useFeature
     : true);
 ```
 
+## Debug Logging
+
+All worlds support configurable debug logging via `WORKFLOW_DEBUG`. Logs are written to stderr (not stdout) to avoid interfering with CLI JSON parsing.
+
+```bash
+# Enable all debug output
+WORKFLOW_DEBUG=1 pnpm test
+
+# Enable specific worlds
+WORKFLOW_DEBUG=redis-world pnpm test
+WORKFLOW_DEBUG=mongodb-world,turso-world pnpm test
+```
+
+Available namespaces: `redis-world`, `mongodb-world`, `turso-world`, `starter-world`, `workbench`
+
+When implementing a new world, use the debug logger pattern from `packages/*/src/utils.ts`:
+```typescript
+import { debug } from './utils.js';
+
+debug('Starting queue processing...');
+debug('Recovered', count, 'stuck messages');
+```
+
 ## Robust Queue Implementation
 
 For production worlds, implement a robust queue with these patterns:

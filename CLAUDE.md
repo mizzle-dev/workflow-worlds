@@ -115,6 +115,27 @@ const useFeature = config.useFeature
     : true);
 ```
 
+### Debug Logging
+
+All worlds support configurable debug logging via `WORKFLOW_DEBUG`. Logs are written to stderr to avoid interfering with CLI JSON parsing on stdout.
+
+```bash
+# Enable all debug output
+WORKFLOW_DEBUG=1 pnpm test
+
+# Enable specific worlds
+WORKFLOW_DEBUG=redis-world pnpm test
+WORKFLOW_DEBUG=mongodb-world,turso-world pnpm test
+```
+
+| Namespace | World |
+|-----------|-------|
+| `redis-world` | Redis |
+| `mongodb-world` | MongoDB |
+| `turso-world` | Turso |
+| `starter-world` | Starter |
+| `workbench` | Workbench plugin |
+
 ## Building a New World
 
 1. Copy starter: `cp -r packages/starter packages/{backend}`
