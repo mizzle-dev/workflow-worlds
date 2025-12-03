@@ -1,6 +1,6 @@
 {
   "name": "@workflow-worlds/starter",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Starter template for building Workflow DevKit Worlds",
   "type": "module",
   "main": "dist/index.js",

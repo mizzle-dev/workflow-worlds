@@ -1,6 +1,6 @@
 {
   "name": "@workflow-worlds/mongodb",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "MongoDB World implementation for Workflow DevKit",
   "author": "Dustin Townsend",
   "license": "MIT",
