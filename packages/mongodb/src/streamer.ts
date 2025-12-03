@@ -207,6 +207,12 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
           const bufferedEventChunks: StreamChunk[] = [];
           let isLoadingFromStorage = true;
 
+          // Helper to convert MongoDB Binary to Uint8Array
+          const toUint8Array = (data: Uint8Array | unknown): Uint8Array => {
+            if (data instanceof Uint8Array) return data;
+            return new Uint8Array((data as any).buffer || data);
+          };
+
           // Handler for new chunks (real-time)
           const chunkHandler = (chunk: StreamChunk) => {
             // Skip if already delivered
@@ -215,8 +221,11 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
             }
             deliveredChunkIds.add(chunk.chunkId);
 
+            // Convert MongoDB Binary to Uint8Array if needed
+            const data = toUint8Array(chunk.data);
+
             // Skip empty chunks (except EOF)
-            if (chunk.data.byteLength === 0 && !chunk.eof) {
+            if (data.byteLength === 0 && !chunk.eof) {
               return;
             }
 
@@ -225,9 +234,9 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
               bufferedEventChunks.push(chunk);
             } else {
               // Deliver immediately after initial load
-              if (chunk.data.byteLength > 0) {
+              if (data.byteLength > 0) {
                 // Create a copy to prevent ArrayBuffer detachment
-                controller.enqueue(Uint8Array.from(chunk.data));
+                controller.enqueue(Uint8Array.from(data));
               }
             }
           };
@@ -274,10 +283,13 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
             }
             deliveredChunkIds.add(chunk.chunkId);
 
+            // Convert MongoDB Binary to Uint8Array if needed
+            const data = toUint8Array(chunk.data);
+
             // Deliver the chunk
-            if (chunk.data.byteLength > 0) {
+            if (data.byteLength > 0) {
               // Create a copy to prevent ArrayBuffer detachment
-              controller.enqueue(Uint8Array.from(chunk.data));
+              controller.enqueue(Uint8Array.from(data));
             }
           }
 
@@ -295,8 +307,9 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
               controller.close();
               return;
             }
-            if (chunk.data.byteLength > 0) {
-              controller.enqueue(Uint8Array.from(chunk.data));
+            const data = toUint8Array(chunk.data);
+            if (data.byteLength > 0) {
+              controller.enqueue(Uint8Array.from(data));
             }
           }
 

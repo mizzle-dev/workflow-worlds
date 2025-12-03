@@ -136,7 +136,13 @@ export function serializeForRedis(obj: Record<string, unknown>): Record<string, 
       continue;
     }
     if (value === null) {
-      result[key] = '';
+      // Store null as special marker to distinguish from undefined and empty string
+      result[key] = '\x00null';
+      continue;
+    }
+    if (value === '') {
+      // Store empty string as special marker to distinguish from undefined
+      result[key] = '\x00empty';
       continue;
     }
     if (value instanceof Date) {
@@ -176,6 +182,18 @@ export function deserializeFromRedis<T = Record<string, unknown>>(
     // Empty string or 'undefined' becomes undefined
     if (value === '' || value === 'undefined') {
       result[key] = undefined;
+      continue;
+    }
+
+    // Special marker for null
+    if (value === '\x00null') {
+      result[key] = null;
+      continue;
+    }
+
+    // Special marker for empty string
+    if (value === '\x00empty') {
+      result[key] = '';
       continue;
     }
 
