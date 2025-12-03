@@ -51,11 +51,34 @@ interface HookDocument extends Omit<Hook, 'createdAt'> {
 }
 
 /**
- * Helper to convert null values to undefined (MongoDB stores undefined as null).
- * Also removes the MongoDB _id field.
+ * Helper to strip undefined values before storing in MongoDB.
+ * MongoDB converts undefined to null, so we remove undefined keys entirely.
+ * This preserves the semantic difference between explicit null and undefined.
+ */
+function stripUndefined<T>(doc: T): T {
+  if (doc === null || doc === undefined) return doc;
+  if (typeof doc !== 'object') return doc;
+  if (Array.isArray(doc)) return doc.map(stripUndefined) as T;
+  if (doc instanceof Date) return doc as T;
+
+  const result: any = {};
+  for (const [key, value] of Object.entries(doc as object)) {
+    if (value === undefined) continue; // Skip undefined values
+    result[key] = (typeof value === 'object' && value !== null && !(value instanceof Date))
+      ? stripUndefined(value)
+      : value;
+  }
+  return result;
+}
+
+/**
+ * Helper to clean MongoDB documents.
+ * Removes the MongoDB _id field and recursively cleans nested objects.
+ * Preserves null values (does not convert to undefined).
  */
 function cleanMongoDoc<T>(doc: T): T {
-  if (doc === null || doc === undefined) return undefined as T;
+  if (doc === null) return null as T; // Preserve null at top level
+  if (doc === undefined) return undefined as T;
   if (typeof doc !== 'object') return doc;
   if (Array.isArray(doc)) return doc.map(cleanMongoDoc) as T;
   if (doc instanceof Date) return doc as T;
@@ -63,8 +86,10 @@ function cleanMongoDoc<T>(doc: T): T {
   const result: any = {};
   for (const [key, value] of Object.entries(doc as object)) {
     if (key === '_id') continue; // Skip MongoDB _id field
-    result[key] = value === null ? undefined :
-                  (typeof value === 'object' && !(value instanceof Date)) ? cleanMongoDoc(value) : value;
+    // Preserve null values - don't convert to undefined
+    result[key] = (typeof value === 'object' && value !== null && !(value instanceof Date))
+      ? cleanMongoDoc(value)
+      : value;
   }
   return result;
 }
@@ -77,18 +102,26 @@ function filterRunData(
   resolveData: 'none' | 'all' = 'all'
 ): WorkflowRun {
   const cleaned = cleanMongoDoc(run);
+  // error and executionContext should be undefined when not set (null from DB means not set)
+  const result = {
+    ...cleaned,
+    error: cleaned.error ?? undefined,
+    executionContext: cleaned.executionContext ?? undefined,
+  } as WorkflowRun;
   if (resolveData === 'none') {
-    return { ...cleaned, input: [], output: undefined };
+    return { ...result, input: [], output: undefined } as WorkflowRun;
   }
-  return cleaned;
+  return result;
 }
 
 function filterStepData(step: Step, resolveData: 'none' | 'all' = 'all'): Step {
   const cleaned = cleanMongoDoc(step);
+  // error should be undefined when not set (null from DB means no error)
+  const result = { ...cleaned, error: (cleaned.error ?? undefined) as Step['error'] };
   if (resolveData === 'none') {
-    return { ...cleaned, input: [], output: undefined };
+    return { ...result, input: [], output: undefined };
   }
-  return cleaned;
+  return result;
 }
 
 function filterEventData(
@@ -200,12 +233,13 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
           deploymentId: data.deploymentId,
           status: 'pending',
           workflowName: data.workflowName,
-          input: (data.input ?? []) as unknown[],
+          // Strip undefined values to prevent MongoDB converting them to null
+          input: stripUndefined((data.input ?? []) as unknown[]),
           output: undefined,
           error: undefined,
-          executionContext: data.executionContext as
+          executionContext: stripUndefined(data.executionContext as
             | Record<string, unknown>
-            | undefined,
+            | undefined),
           startedAt: undefined,
           completedAt: undefined,
           createdAt: now,
@@ -231,8 +265,14 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
         }
 
         const now = new Date();
-        const updated: Partial<WorkflowRunDocument> = {
+        // Strip undefined values from complex fields
+        const strippedData = {
           ...data,
+          output: data.output !== undefined ? stripUndefined(data.output) : undefined,
+          executionContext: data.executionContext !== undefined ? stripUndefined(data.executionContext) : undefined,
+        };
+        const updated: Partial<WorkflowRunDocument> = {
+          ...strippedData,
           updatedAt: now,
         };
 
@@ -335,7 +375,8 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
           stepId: data.stepId,
           stepName: data.stepName,
           status: 'pending',
-          input: data.input as unknown[],
+          // Strip undefined values to prevent MongoDB converting them to null
+          input: stripUndefined(data.input as unknown[]),
           output: undefined,
           error: undefined,
           attempt: 0,
@@ -379,8 +420,13 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
         }
 
         const now = new Date();
-        const updated: Partial<StepDocument> = {
+        // Strip undefined values from complex fields
+        const strippedData = {
           ...data,
+          output: data.output !== undefined ? stripUndefined(data.output) : undefined,
+        };
+        const updated: Partial<StepDocument> = {
+          ...strippedData,
           updatedAt: now,
         };
 
