@@ -11,6 +11,7 @@ import { encode, decode } from 'cbor-x';
 /**
  * Creates a custom CBOR column type for Drizzle.
  * Stores data as BLOB with automatic CBOR encoding/decoding.
+ * CBOR preserves Date, undefined, Map, Set, BigInt, and null types.
  *
  * @example
  * ```typescript
@@ -23,19 +24,24 @@ export function Cbor<T>() {
   return customType<{ data: T; driverData: Buffer }>({
     dataType: () => 'blob',
     fromDriver: (value): T => {
-      // Drizzle handles null at a higher level for optional columns
-      // This is only called when there's actual data
+      // No data from database
       if (value === null || value === undefined) {
         return undefined as unknown as T;
       }
-      return decode(value as Buffer) as T;
+      // Empty buffer means undefined was stored
+      const buf = value as Buffer;
+      if (buf.length === 0) {
+        return undefined as unknown as T;
+      }
+      // Decode CBOR - this preserves null, Date, etc.
+      return decode(buf) as T;
     },
     toDriver: (value): Buffer => {
-      // Drizzle handles null at a higher level for optional columns
-      // Return empty buffer for null/undefined (shouldn't normally happen)
-      if (value === undefined || value === null) {
+      // Only treat undefined as "no value" - null should be encoded
+      if (value === undefined) {
         return Buffer.alloc(0);
       }
+      // CBOR encodes null as a proper value (0xf6)
       return Buffer.from(encode(value));
     },
   });
