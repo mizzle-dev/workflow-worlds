@@ -10,7 +10,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const createQueue = async () => {
   const mod = await import(join(__dirname, '..', 'dist', 'queue.js'));
-  return { queue: mod.createQueue() };
+  const { queue } = mod.createQueue();
+  return { queue };
 };
 
 queueTests({ createQueue });

@@ -52,11 +52,27 @@ function getBaseUrl(configBaseUrl?: string): string {
 }
 
 /**
+ * Buffered message for processing after start() is called.
+ */
+interface BufferedMessage {
+  queueName: ValidQueueName;
+  serialized: Buffer;
+  messageId: MessageId;
+  pathname: string;
+}
+
+/**
  * Creates the Queue implementation.
+ *
+ * Returns both the queue interface and a start function.
+ * Messages are buffered until start() is called, then processed.
  *
  * TODO: Replace the in-memory queue with your queue system.
  */
-export function createQueue(config: QueueConfig = {}): Queue {
+export function createQueue(config: QueueConfig = {}): {
+  queue: Queue;
+  start: () => Promise<void>;
+} {
   debug('Creating queue with config:', {
     baseUrl: config.baseUrl ?? 'default',
     concurrency: config.concurrency ?? 20,
@@ -85,6 +101,10 @@ export function createQueue(config: QueueConfig = {}): Queue {
   let currentConcurrency = 0;
   const waitQueue: Array<() => void> = [];
 
+  // Buffer for messages queued before start() is called
+  const messageBuffer: BufferedMessage[] = [];
+  let isStarted = false;
+
   async function acquireConcurrency(): Promise<void> {
     if (currentConcurrency < maxConcurrency) {
       currentConcurrency++;
@@ -105,7 +125,74 @@ export function createQueue(config: QueueConfig = {}): Queue {
     }
   }
 
-  return {
+  /**
+   * Processes a single message by making an HTTP request to the workflow server.
+   */
+  async function processMessage(msg: BufferedMessage): Promise<void> {
+    await acquireConcurrency();
+
+    try {
+      let retriesLeft = 3;
+
+      for (let attempt = 1; retriesLeft > 0; attempt++) {
+        retriesLeft--;
+
+        try {
+          const response = await fetch(
+            `${getBaseUrl(config.baseUrl)}/.well-known/workflow/v1/${msg.pathname}`,
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'x-vqs-queue-name': msg.queueName,
+                'x-vqs-message-id': msg.messageId,
+                'x-vqs-message-attempt': String(attempt),
+              },
+              body: msg.serialized,
+            }
+          );
+
+          if (response.ok) {
+            return; // Success
+          }
+
+          const text = await response.text();
+
+          // Check for retry request (503 with timeoutSeconds)
+          if (response.status === 503) {
+            try {
+              const { timeoutSeconds } = JSON.parse(text);
+              if (typeof timeoutSeconds === 'number') {
+                // Wait and retry
+                await new Promise((r) =>
+                  setTimeout(r, timeoutSeconds * 1000)
+                );
+                retriesLeft++; // Don't count this as a failed retry
+                continue;
+              }
+            } catch {
+              // Not a valid retry response
+            }
+          }
+
+          console.error('[starter-world] Message processing failed:', {
+            queueName: msg.queueName,
+            status: response.status,
+            text,
+          });
+        } catch (err) {
+          // Network error, retry
+          console.error('[starter-world] Network error:', err);
+        }
+      }
+
+      console.error('[starter-world] Max retries reached for:', msg.queueName);
+    } finally {
+      releaseConcurrency();
+    }
+  }
+
+  const queue: Queue = {
     /**
      * Returns a unique identifier for this deployment.
      *
@@ -119,7 +206,11 @@ export function createQueue(config: QueueConfig = {}): Queue {
     /**
      * Enqueues a message for processing.
      *
-     * TODO: Replace setTimeout with your queue system:
+     * If start() has not been called, messages are buffered.
+     * Once start() is called, buffered messages are processed and
+     * future messages are processed immediately.
+     *
+     * TODO: Replace with your queue system:
      * - BullMQ: queue.add(name, data)
      * - Agenda: agenda.now(name, data)
      * - SQS: sqs.sendMessage(params)
@@ -172,71 +263,20 @@ export function createQueue(config: QueueConfig = {}): Queue {
         throw new Error(`Unknown queue prefix in: ${queueName}`);
       }
 
-      // Process asynchronously
-      // TODO: Replace with your queue system's enqueueing
-      (async () => {
-        await acquireConcurrency();
+      const bufferedMsg: BufferedMessage = {
+        queueName,
+        serialized,
+        messageId,
+        pathname,
+      };
 
-        try {
-          let retriesLeft = 3;
-
-          for (let attempt = 1; retriesLeft > 0; attempt++) {
-            retriesLeft--;
-
-            try {
-              const response = await fetch(
-                `${getBaseUrl(config.baseUrl)}/.well-known/workflow/v1/${pathname}`,
-                {
-                  method: 'POST',
-                  headers: {
-                    'content-type': 'application/json',
-                    'x-vqs-queue-name': queueName,
-                    'x-vqs-message-id': messageId,
-                    'x-vqs-message-attempt': String(attempt),
-                  },
-                  body: serialized,
-                }
-              );
-
-              if (response.ok) {
-                return; // Success
-              }
-
-              const text = await response.text();
-
-              // Check for retry request (503 with timeoutSeconds)
-              if (response.status === 503) {
-                try {
-                  const { timeoutSeconds } = JSON.parse(text);
-                  if (typeof timeoutSeconds === 'number') {
-                    // Wait and retry
-                    await new Promise((r) =>
-                      setTimeout(r, timeoutSeconds * 1000)
-                    );
-                    retriesLeft++; // Don't count this as a failed retry
-                    continue;
-                  }
-                } catch {
-                  // Not a valid retry response
-                }
-              }
-
-              console.error('[starter-world] Message processing failed:', {
-                queueName,
-                status: response.status,
-                text,
-              });
-            } catch (err) {
-              // Network error, retry
-              console.error('[starter-world] Network error:', err);
-            }
-          }
-
-          console.error('[starter-world] Max retries reached for:', queueName);
-        } finally {
-          releaseConcurrency();
-        }
-      })();
+      if (isStarted) {
+        // Process immediately (async, don't await)
+        processMessage(bufferedMsg);
+      } else {
+        // Buffer until start() is called
+        messageBuffer.push(bufferedMsg);
+      }
 
       return { messageId };
     },
@@ -309,4 +349,26 @@ export function createQueue(config: QueueConfig = {}): Queue {
       };
     },
   };
+
+  /**
+   * Starts the queue processor.
+   * Processes any buffered messages and allows future messages to process immediately.
+   */
+  async function start(): Promise<void> {
+    if (isStarted) {
+      return; // Already started
+    }
+
+    debug('Starting queue processor, processing', messageBuffer.length, 'buffered messages');
+    isStarted = true;
+
+    // Process all buffered messages (async, don't block)
+    for (const msg of messageBuffer) {
+      processMessage(msg);
+    }
+    // Clear the buffer
+    messageBuffer.length = 0;
+  }
+
+  return { queue, start };
 }

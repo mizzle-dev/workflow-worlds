@@ -48,7 +48,7 @@ export function createWorld(config: StarterWorldConfig = {}): World {
   debug('Creating world with config:', config);
 
   const storage = createStorage();
-  const queue = createQueue(config);
+  const { queue, start: startQueue } = createQueue(config);
   const streamer = createStreamer(config);
 
   debug('Initialization complete');
@@ -64,24 +64,18 @@ export function createWorld(config: StarterWorldConfig = {}): World {
     ...streamer,
 
     /**
-     * Optional: Start background tasks.
+     * Starts the queue processor.
      *
-     * Use this to start:
-     * - Queue workers
-     * - Cleanup jobs
-     * - Health check loops
+     * Messages queued before start() is called are buffered.
+     * Once start() is called:
+     * - All buffered messages are processed
+     * - Future messages are processed immediately
      *
-     * Not needed for serverless environments.
-     *
-     * TODO: Implement if your backend needs initialization.
+     * This matches the behavior of production worlds like Redis/BullMQ
+     * where workers must be started explicitly.
      */
     async start(): Promise<void> {
-      // TODO: Start your queue workers, cleanup jobs, etc.
-      // Example for BullMQ:
-      // await worker.run();
-      //
-      // Example for cleanup job:
-      // setInterval(() => cleanupOldRuns(), 60000);
+      await startQueue();
     },
   };
 }
