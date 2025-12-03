@@ -40,6 +40,7 @@
     "@testcontainers/mongodb": "^10.0.0",
     "@types/node": "^22.0.0",
     "@workflow/world-testing": "4.0.1-beta.23",
+    "@workflow-worlds/testing": "workspace:*",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },

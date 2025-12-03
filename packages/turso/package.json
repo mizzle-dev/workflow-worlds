@@ -56,6 +56,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@workflow/world-testing": "4.0.1-beta.23",
+    "@workflow-worlds/testing": "workspace:*",
     "drizzle-kit": "^0.31.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
