@@ -2,13 +2,15 @@
  * Shared test setup for Turso World
  *
  * This file is loaded by vitest's setupFiles config.
- * It manages the test database lifecycle.
+ * It manages the test database lifecycle and runs migrations.
  */
 
 import { unlinkSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClient, type Client } from '@libsql/client';
+import { drizzle } from 'drizzle-orm/libsql';
+import { migrate } from 'drizzle-orm/libsql/migrator';
 import { beforeAll, afterAll } from 'vitest';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -16,8 +18,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Test database file paths
 const testDbPath = join(__dirname, '..', 'test.db');
 const extendedTestDbPath = join(__dirname, '..', 'test-extended.db');
+const migrationsPath = join(__dirname, '..', 'src', 'drizzle', 'migrations');
 
 let extendedClient: Client | undefined;
+
+/**
+ * Runs Drizzle migrations on a database client.
+ */
+async function runMigrations(client: Client): Promise<void> {
+  await client.execute('PRAGMA journal_mode = WAL');
+  await client.execute('PRAGMA busy_timeout = 5000');
+  const db = drizzle(client);
+  await migrate(db, {
+    migrationsFolder: migrationsPath,
+    migrationsTable: 'workflow_migrations',
+  });
+}
 
 beforeAll(async () => {
   // Clean up any existing test databases
@@ -30,6 +46,11 @@ beforeAll(async () => {
 
   // Set environment variables for the standard test
   process.env.WORKFLOW_TURSO_DATABASE_URL = `file:${testDbPath}`;
+
+  // Run migrations on the main test database
+  const client = createClient({ url: `file:${testDbPath}` });
+  await runMigrations(client);
+  await client.close();
 }, 30_000);
 
 afterAll(async () => {
@@ -54,9 +75,8 @@ async function getExtendedClient(): Promise<Client> {
     extendedClient = createClient({
       url: `file:${extendedTestDbPath}`,
     });
-    // Initialize schema
-    const schemaModule = await import(join(__dirname, '..', 'dist', 'schema.js'));
-    await schemaModule.initializeSchema(extendedClient);
+    // Run migrations
+    await runMigrations(extendedClient);
   }
   return extendedClient;
 }

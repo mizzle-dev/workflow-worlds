@@ -17,6 +17,28 @@ npm install @workflow-worlds/turso @libsql/client
 pnpm add @workflow-worlds/turso @libsql/client
 ```
 
+## Setup
+
+Before using the Turso World, you must run the database setup command to create the schema:
+
+```bash
+# Set environment variables (or use .env file)
+export WORKFLOW_TURSO_DATABASE_URL=libsql://your-database.turso.io
+export WORKFLOW_TURSO_AUTH_TOKEN=your-auth-token
+
+# Run setup
+pnpm exec workflow-turso-setup
+```
+
+For local development with a file-based database:
+
+```bash
+# Uses file:workflow.db by default
+pnpm exec workflow-turso-setup
+```
+
+The setup command uses Drizzle migrations and is safe to run multiple times - it only applies pending migrations.
+
 ## Usage
 
 ```typescript
@@ -141,7 +163,7 @@ pnpm build
 pnpm test
 ```
 
-The tests use an in-memory SQLite database, so no external services are needed.
+The tests use a local file-based SQLite database with automatic migration setup.
 
 ## Key Patterns
 
@@ -215,7 +237,7 @@ The implementation uses `WorkflowAPIError` from `@workflow/errors` for consisten
 
 3. **Single-Process Streaming**: The EventEmitter-based streamer works for single-process deployments; for multi-process, add external pub/sub
 
-4. **Schema Migrations**: Tables are created automatically on first use with `CREATE TABLE IF NOT EXISTS`
+4. **Schema Migrations**: Run `pnpm exec workflow-turso-setup` before first use and after package upgrades to apply any new migrations
 
 5. **Graceful Shutdown**: The queue waits up to 30 seconds for in-flight messages during shutdown
 

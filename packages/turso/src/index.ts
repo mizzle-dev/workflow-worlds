@@ -5,6 +5,10 @@
  * queue, and streaming. Supports both embedded (local file) and
  * remote Turso databases.
  *
+ * Setup:
+ * Before using this World, run the database setup command:
+ *   pnpm exec workflow-turso-setup
+ *
  * Key behavior:
  * - queue() stores messages in the database
  * - start() begins processing messages
@@ -21,7 +25,6 @@
 import { createClient, type Client } from '@libsql/client';
 import type { World } from '@workflow/world';
 import { createQueue } from './queue.js';
-import { initializeSchema } from './schema.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -135,9 +138,7 @@ export function createWorld(config: TursoWorldConfig = {}): World {
   function ensureInitialized() {
     if (!initPromise) {
       initPromise = (async () => {
-        // Initialize schema
-        await initializeSchema(client);
-
+        // Note: Schema must be created by running: pnpm exec workflow-turso-setup
         // Create components
         const storage = createStorage({ client });
         const queueResult = createQueue({
