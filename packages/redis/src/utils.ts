@@ -6,7 +6,7 @@
 
 import { encode as cborEncode, decode as cborDecode } from 'cbor-x';
 
-// CBOR prefix to distinguish from legacy JSON data
+// CBOR prefix for encoded data
 const CBOR_PREFIX = 'cbor:';
 
 // =============================================================================
@@ -102,19 +102,14 @@ export function toCbor(value: unknown): string {
 
 /**
  * Decodes a CBOR-encoded string (with prefix) back to original value.
- * Returns undefined if the input is null/undefined.
+ * Returns undefined if the input is null/undefined or not CBOR-encoded.
  */
 export function fromCbor<T>(value: string | null | undefined): T | undefined {
   if (value === null || value === undefined) {
     return undefined;
   }
   if (!value.startsWith(CBOR_PREFIX)) {
-    // Legacy JSON data - parse with JSON and hope for the best
-    try {
-      return JSON.parse(value) as T;
-    } catch {
-      return undefined;
-    }
+    return undefined;
   }
   const base64 = value.slice(CBOR_PREFIX.length);
   const buffer = Buffer.from(base64, 'base64');
@@ -164,7 +159,6 @@ export function serializeForRedis(obj: Record<string, unknown>): Record<string, 
  * Deserializes Redis Hash fields back to a JavaScript object.
  * - CBOR-prefixed strings are decoded with full type preservation
  * - ISO date strings in known date fields are converted to Date objects
- * - Legacy JSON strings are parsed back to objects/arrays
  * - Empty strings become undefined
  * - Boolean strings are converted to booleans
  * - Numeric strings are converted to numbers (except for ID fields)
@@ -217,16 +211,6 @@ export function deserializeFromRedis<T = Record<string, unknown>>(
     if (value === 'false') {
       result[key] = false;
       continue;
-    }
-
-    // Legacy JSON objects/arrays (backwards compatibility)
-    if (value.startsWith('{') || value.startsWith('[')) {
-      try {
-        result[key] = JSON.parse(value);
-        continue;
-      } catch {
-        // Not valid JSON, treat as string
-      }
     }
 
     // String fields (keep as string even if numeric)
