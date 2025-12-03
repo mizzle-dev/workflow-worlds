@@ -1,5 +1,9 @@
 # @workflow-worlds/redis
 
+[![npm version](https://img.shields.io/npm/v/@workflow-worlds/redis.svg)](https://www.npmjs.com/package/@workflow-worlds/redis)
+[![license](https://img.shields.io/npm/l/@workflow-worlds/redis.svg)](https://github.com/mizzle-dev/workflow-worlds/blob/main/LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
+
 A production-ready [World](https://github.com/vercel/workflow) implementation using Redis for storage, BullMQ for queue processing, and Redis Streams for real-time output.
 
 ## Features

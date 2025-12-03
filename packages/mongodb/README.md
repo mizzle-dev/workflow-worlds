@@ -1,5 +1,9 @@
 # MongoDB World
 
+[![npm version](https://img.shields.io/npm/v/@workflow-worlds/mongodb.svg)](https://www.npmjs.com/package/@workflow-worlds/mongodb)
+[![license](https://img.shields.io/npm/l/@workflow-worlds/mongodb.svg)](https://github.com/mizzle-dev/workflow-worlds/blob/main/LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
+
 A complete MongoDB-backed World implementation for the Workflow DevKit.
 
 ## Features

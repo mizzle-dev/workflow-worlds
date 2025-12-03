@@ -1,5 +1,9 @@
 # Turso World
 
+[![npm version](https://img.shields.io/npm/v/@workflow-worlds/turso.svg)](https://www.npmjs.com/package/@workflow-worlds/turso)
+[![license](https://img.shields.io/npm/l/@workflow-worlds/turso.svg)](https://github.com/mizzle-dev/workflow-worlds/blob/main/LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
+
 A complete Turso/libSQL-backed World implementation for the Workflow DevKit.
 
 ## Features

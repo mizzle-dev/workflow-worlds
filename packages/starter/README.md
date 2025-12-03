@@ -1,5 +1,9 @@
 # @workflow-worlds/starter
 
+[![npm version](https://img.shields.io/npm/v/@workflow-worlds/starter.svg)](https://www.npmjs.com/package/@workflow-worlds/starter)
+[![license](https://img.shields.io/npm/l/@workflow-worlds/starter.svg)](https://github.com/mizzle-dev/workflow-worlds/blob/main/LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
+
 A complete in-memory [World](https://github.com/vercel/workflow) implementation that serves as a starting point for building custom Worlds.
 
 ## Features

@@ -1,5 +1,9 @@
 # @workflow-worlds/testing
 
+[![npm version](https://img.shields.io/npm/v/@workflow-worlds/testing.svg)](https://www.npmjs.com/package/@workflow-worlds/testing)
+[![license](https://img.shields.io/npm/l/@workflow-worlds/testing.svg)](https://github.com/mizzle-dev/workflow-worlds/blob/main/LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
+
 Extended testing utilities for [Workflow World](https://github.com/vercel/workflow) implementations. Complements `@workflow/world-testing` with additional test suites for edge cases.
 
 ## Features
