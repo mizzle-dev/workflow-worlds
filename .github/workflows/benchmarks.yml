@@ -394,6 +394,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Setup Turso database
+        run: pnpm --filter @workflow-worlds/workbench exec workflow-turso-setup
+        env:
+          WORKFLOW_TURSO_DATABASE_URL: "file:benchmark.db"
+
       - name: Build workbench
         run: pnpm --filter @workflow-worlds/workbench build
         env:
