@@ -2,6 +2,17 @@
   "name": "@workflow-worlds/testing",
   "version": "0.0.1",
   "description": "Extended testing utilities for Workflow Worlds",
+  "author": "Dustin Townsend",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mizzle-dev/workflow-worlds.git",
+    "directory": "packages/testing"
+  },
+  "homepage": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/testing#readme",
+  "bugs": {
+    "url": "https://github.com/mizzle-dev/workflow-worlds/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -39,6 +50,5 @@
   ],
   "publishConfig": {
     "access": "public"
-  },
-  "license": "MIT"
+  }
 }

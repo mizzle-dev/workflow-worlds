@@ -1,5 +1,5 @@
 {
-  "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
+  "$schema": "https://unpkg.com/@changesets/config@3.1.2/schema.json",
   "changelog": [
     "@changesets/changelog-github",
     { "repo": "mizzle-dev/workflow-worlds" }
@@ -10,5 +10,5 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": ["@workflow-worlds/workbench"]
+  "ignore": ["@workflow-worlds/workbench", "@workflow-worlds/testing"]
 }
