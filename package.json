@@ -5,14 +5,17 @@
   "description": "Custom World implementations for the Workflow DevKit",
   "type": "module",
   "scripts": {
-    "build": "pnpm -r --filter='!@workflow-worlds/workbench' build",
-    "test": "pnpm -r --filter='!@workflow-worlds/workbench' test",
-    "typecheck": "pnpm -r --filter='!@workflow-worlds/workbench' typecheck",
-    "clean": "pnpm -r clean",
+    "build": "turbo run build --filter='!@workflow-worlds/workbench'",
+    "test": "turbo run test --filter='!@workflow-worlds/workbench'",
+    "typecheck": "turbo run typecheck --filter='!@workflow-worlds/workbench'",
+    "clean": "pnpm -r clean && rm -rf .turbo",
     "bench": "pnpm --filter @workflow-worlds/workbench bench",
     "bench:starter": "WORKFLOW_TARGET_WORLD=@workflow-worlds/starter pnpm bench",
     "bench:mongodb": "WORKFLOW_TARGET_WORLD=@workflow-worlds/mongodb pnpm bench",
-    "bench:redis": "WORKFLOW_TARGET_WORLD=@workflow-worlds/redis pnpm bench"
+    "bench:redis": "WORKFLOW_TARGET_WORLD=@workflow-worlds/redis pnpm bench",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "turbo run build --filter='!@workflow-worlds/workbench' && changeset publish"
   },
   "keywords": [
     "workflow",
@@ -25,5 +28,10 @@
   "packageManager": "pnpm@10.11.0",
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "^0.5.2",
+    "@changesets/cli": "^2.29.8",
+    "turbo": "^2.6.1"
   }
 }
