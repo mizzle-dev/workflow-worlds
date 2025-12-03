@@ -10,5 +10,5 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": ["@workflow-worlds/workbench", "@workflow-worlds/testing"]
+  "ignore": ["@workflow-worlds/workbench"]
 }

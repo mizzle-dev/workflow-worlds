@@ -30,13 +30,6 @@ A World provides the infrastructure layer for Workflow DevKit, handling:
 
 4. Replace the in-memory implementations with your backend
 
-### Installation
-
-```bash
-# Install the starter as a template
-npm create @workflow-worlds my-world
-```
-
 ## Packages
 
 | Package | Description | Status |
