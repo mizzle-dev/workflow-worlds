@@ -1,6 +1,6 @@
 {
   "name": "@workflow-worlds/starter",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "description": "Starter template for building Workflow DevKit Worlds",
   "author": "Dustin Townsend",
   "license": "MIT",
