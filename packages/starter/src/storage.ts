@@ -134,7 +134,8 @@ export function createStorage(): Storage {
 
         // TODO: INSERT INTO runs VALUES (...)
         runs.set(runId, run);
-        return run;
+        // Return a clone to prevent caller mutations from affecting stored data
+        return deepClone(run);
       },
 
       /**
@@ -199,7 +200,8 @@ export function createStorage(): Storage {
 
         // TODO: Update in your database
         runs.set(id, updated);
-        return updated;
+        // Return a clone to prevent caller mutations from affecting stored data
+        return deepClone(updated);
       },
 
       /**
@@ -306,7 +308,8 @@ export function createStorage(): Storage {
         const key = `${runId}-${data.stepId}`;
         // TODO: Insert into your database
         steps.set(key, step);
-        return step;
+        // Return a clone to prevent caller mutations from affecting stored data
+        return deepClone(step);
       },
 
       /**
@@ -366,7 +369,8 @@ export function createStorage(): Storage {
 
         // TODO: Update in your database
         steps.set(key, updated);
-        return updated;
+        // Return a clone to prevent caller mutations from affecting stored data
+        return deepClone(updated);
       },
 
       /**

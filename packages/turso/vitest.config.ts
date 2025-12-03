@@ -6,7 +6,7 @@ export default defineConfig({
     hookTimeout: 120_000,
     include: ['test/**/*.test.ts'],
     setupFiles: ['test/setup.ts'],
-    // Run tests sequentially to share the container
+    // Run tests sequentially to share the database
     pool: 'forks',
     poolOptions: {
       forks: {

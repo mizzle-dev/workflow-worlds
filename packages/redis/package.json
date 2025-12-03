@@ -1,6 +1,6 @@
 {
   "name": "@workflow-worlds/redis",
-  "version": "0.0.3",
+  "version": "0.0.5",
   "description": "Redis World implementation for Workflow DevKit using BullMQ",
   "author": "Dustin Townsend",
   "license": "MIT",
@@ -35,6 +35,7 @@
     "@workflow/errors": "4.0.1-beta.6",
     "@workflow/world": "4.0.1-beta.7",
     "bullmq": "^5.34.0",
+    "cbor-x": "1.6.0",
     "ioredis": "^5.4.2",
     "ulid": "^2.3.0"
   },
@@ -42,6 +43,7 @@
     "@testcontainers/redis": "^10.18.0",
     "@types/node": "^22.0.0",
     "@workflow/world-testing": "4.0.1-beta.23",
+    "@workflow-worlds/testing": "workspace:*",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },

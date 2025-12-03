@@ -1,11 +1,11 @@
 /**
  * Turso Storage Implementation
  *
- * Implements the Storage interface using Turso/libSQL.
- * Uses SQL tables for runs, steps, events, and hooks with JSON columns for flexible data.
+ * Implements the Storage interface using Turso/libSQL with Drizzle ORM.
+ * Uses CBOR columns for type-preserving data storage.
  */
 
-import type { Client, Row, InValue } from '@libsql/client';
+import type { Client } from '@libsql/client';
 import type {
   Storage,
   WorkflowRun,
@@ -22,9 +22,15 @@ import type {
 } from '@workflow/world';
 import { WorkflowAPIError } from '@workflow/errors';
 import { monotonicFactory } from 'ulid';
-import { toJson, fromJson, toIsoString, fromIsoString } from './schema.js';
+import { drizzle } from 'drizzle-orm/libsql';
+import { eq, desc, asc, gt, lt, and } from 'drizzle-orm';
+import * as schema from './drizzle/schema.js';
 
 const generateUlid = monotonicFactory();
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
 
 /**
  * Deep clone an object to prevent mutation of stored data.
@@ -34,8 +40,25 @@ function deepClone<T>(obj: T): T {
 }
 
 /**
- * Helper to filter data based on resolveData setting.
+ * Converts ISO string to Date or undefined.
  */
+function toDate(value: string | null | undefined): Date | undefined {
+  if (!value) return undefined;
+  return new Date(value);
+}
+
+/**
+ * Converts Date to ISO string or null.
+ */
+function toIsoString(date: Date | undefined): string | null {
+  if (!date) return null;
+  return date.toISOString();
+}
+
+// =============================================================================
+// Filter Functions
+// =============================================================================
+
 function filterRunData(
   run: WorkflowRun,
   resolveData: 'none' | 'all' = 'all'
@@ -76,110 +99,87 @@ function filterHookData(hook: Hook, resolveData: 'none' | 'all' = 'all'): Hook {
   return cloned;
 }
 
-/**
- * Converts a database row to a WorkflowRun object.
- */
-function rowToRun(row: Row): WorkflowRun {
-  const status = row.status as string;
-  const runId = row.run_id as string;
-  const deploymentId = row.deployment_id as string;
-  const workflowName = row.workflow_name as string;
-  const input = fromJson<unknown[]>(row.input as string | null) ?? [];
-  const output = fromJson<unknown>(row.output as string | null);
-  const error = fromJson<{ message: string; stack?: string; code?: string }>(
-    row.error as string | null
-  );
-  const executionContext = fromJson<Record<string, unknown>>(
-    row.execution_context as string | null
-  );
-  const startedAt = fromIsoString(row.started_at as string | null);
-  const completedAt = fromIsoString(row.completed_at as string | null);
-  const createdAt = fromIsoString(row.created_at as string | null) ?? new Date();
-  const updatedAt = fromIsoString(row.updated_at as string | null) ?? new Date();
+// =============================================================================
+// Row Conversion Functions
+// =============================================================================
 
-  // Return a generic object that matches any WorkflowRun variant
+type RunRow = typeof schema.runs.$inferSelect;
+type StepRow = typeof schema.steps.$inferSelect;
+type EventRow = typeof schema.events.$inferSelect;
+type HookRow = typeof schema.hooks.$inferSelect;
+
+function toWorkflowRun(row: RunRow): WorkflowRun {
   return {
-    runId,
-    deploymentId,
-    workflowName,
-    status,
-    input,
-    output,
-    error,
-    executionContext,
-    startedAt,
-    completedAt,
-    createdAt,
-    updatedAt,
+    runId: row.runId,
+    deploymentId: row.deploymentId,
+    workflowName: row.workflowName,
+    status: row.status,
+    input: row.input ?? [],
+    output: row.output,
+    // error should be undefined when not set (null from DB means no error)
+    error: row.error ?? undefined,
+    executionContext: row.executionContext,
+    startedAt: toDate(row.startedAt),
+    completedAt: toDate(row.completedAt),
+    createdAt: toDate(row.createdAt) ?? new Date(),
+    updatedAt: toDate(row.updatedAt) ?? new Date(),
   } as WorkflowRun;
 }
 
-/**
- * Converts a database row to a Step object.
- */
-function rowToStep(row: Row): Step {
+function toStep(row: StepRow): Step {
   return {
-    runId: row.run_id as string,
-    stepId: row.step_id as string,
-    stepName: (row.step_name as string) ?? '',
+    runId: row.runId,
+    stepId: row.stepId,
+    stepName: row.stepName ?? '',
     status: row.status as Step['status'],
-    input: fromJson<unknown[]>(row.input as string | null) ?? [],
-    output: fromJson<unknown>(row.output as string | null),
-    error: fromJson<Step['error']>(row.error as string | null),
-    attempt: (row.attempt as number) ?? 0,
-    startedAt: fromIsoString(row.started_at as string | null),
-    completedAt: fromIsoString(row.completed_at as string | null),
-    createdAt: fromIsoString(row.created_at as string | null) ?? new Date(),
-    updatedAt: fromIsoString(row.updated_at as string | null) ?? new Date(),
+    input: row.input ?? [],
+    output: row.output,
+    // error should be undefined when not set (null from DB means no error)
+    error: (row.error ?? undefined) as Step['error'],
+    attempt: row.attempt ?? 0,
+    startedAt: toDate(row.startedAt),
+    completedAt: toDate(row.completedAt),
+    createdAt: toDate(row.createdAt) ?? new Date(),
+    updatedAt: toDate(row.updatedAt) ?? new Date(),
   };
 }
 
-/**
- * Converts a database row to an Event object.
- */
-function rowToEvent(row: Row): Event {
-  const payload = fromJson<Record<string, unknown>>(
-    row.payload as string | null
-  ) ?? {};
-
-  const baseEvent = {
-    eventId: row.event_id as string,
-    runId: row.run_id as string,
-    createdAt: fromIsoString(row.created_at as string | null) ?? new Date(),
-  };
-
-  // Merge the payload which contains eventType, correlationId, eventData, etc.
+function toEvent(row: EventRow): Event {
+  const payload = row.payload ?? {};
   return {
-    ...baseEvent,
+    eventId: row.eventId,
+    runId: row.runId,
+    createdAt: toDate(row.createdAt) ?? new Date(),
     ...payload,
   } as Event;
 }
 
-/**
- * Converts a database row to a Hook object.
- */
-function rowToHook(row: Row): Hook {
+function toHook(row: HookRow): Hook {
   return {
-    hookId: row.hook_id as string,
-    runId: row.run_id as string,
-    token: row.token as string,
-    metadata: fromJson<unknown>(row.metadata as string | null),
-    ownerId: row.owner_id as string,
-    projectId: row.project_id as string,
-    environment: row.environment as string,
-    createdAt: fromIsoString(row.created_at as string | null) ?? new Date(),
+    hookId: row.hookId,
+    runId: row.runId,
+    token: row.token,
+    metadata: row.metadata,
+    ownerId: row.ownerId,
+    projectId: row.projectId,
+    environment: row.environment,
+    createdAt: toDate(row.createdAt) ?? new Date(),
   };
 }
+
+// =============================================================================
+// Storage Implementation
+// =============================================================================
 
 export interface StorageConfig {
   client: Client;
 }
 
 /**
- * Creates the Storage implementation using Turso/libSQL.
+ * Creates the Storage implementation using Turso/libSQL with Drizzle ORM.
  */
 export function createStorage(config: StorageConfig): Storage {
-  const { client } = config;
+  const db = drizzle(config.client, { schema });
 
   return {
     // =========================================================================
@@ -189,22 +189,17 @@ export function createStorage(config: StorageConfig): Storage {
       async create(data: CreateWorkflowRunRequest): Promise<WorkflowRun> {
         const runId = `wrun_${generateUlid()}`;
         const now = new Date();
-        const nowStr = toIsoString(now);
+        const nowStr = now.toISOString();
 
-        await client.execute({
-          sql: `INSERT INTO workflow_runs
-                (run_id, deployment_id, workflow_name, status, input, output, error,
-                 execution_context, started_at, completed_at, created_at, updated_at)
-                VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, NULL, NULL, ?, ?)`,
-          args: [
-            runId,
-            data.deploymentId,
-            data.workflowName,
-            toJson(data.input ?? []),
-            toJson(data.executionContext),
-            nowStr,
-            nowStr,
-          ] as InValue[],
+        await db.insert(schema.runs).values({
+          runId,
+          deploymentId: data.deploymentId,
+          workflowName: data.workflowName,
+          status: 'pending',
+          input: (data.input ?? []) as unknown[],
+          executionContext: data.executionContext as Record<string, unknown>,
+          createdAt: nowStr,
+          updatedAt: nowStr,
         });
 
         return {
@@ -226,16 +221,17 @@ export function createStorage(config: StorageConfig): Storage {
       },
 
       async get(id, params): Promise<WorkflowRun> {
-        const result = await client.execute({
-          sql: 'SELECT * FROM workflow_runs WHERE run_id = ?',
-          args: [id],
-        });
+        const result = await db
+          .select()
+          .from(schema.runs)
+          .where(eq(schema.runs.runId, id))
+          .limit(1);
 
-        if (result.rows.length === 0) {
+        if (result.length === 0) {
           throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
         }
 
-        const run = rowToRun(result.rows[0]);
+        const run = toWorkflowRun(result[0]);
         return filterRunData(run, params?.resolveData);
       },
 
@@ -243,7 +239,7 @@ export function createStorage(config: StorageConfig): Storage {
         // First, get the existing run
         const existing = await this.get(id);
         const now = new Date();
-        const nowStr = toIsoString(now);
+        const nowStr = now.toISOString();
 
         // Build the updated run
         const updated: WorkflowRun = {
@@ -267,36 +263,23 @@ export function createStorage(config: StorageConfig): Storage {
           updated.completedAt = now;
 
           // Clean up all hooks for this run
-          await client.execute({
-            sql: 'DELETE FROM workflow_hooks WHERE run_id = ?',
-            args: [id],
-          });
+          await db.delete(schema.hooks).where(eq(schema.hooks.runId, id));
         }
 
         // Update the database
-        await client.execute({
-          sql: `UPDATE workflow_runs SET
-                status = ?,
-                input = ?,
-                output = ?,
-                error = ?,
-                execution_context = ?,
-                started_at = ?,
-                completed_at = ?,
-                updated_at = ?
-                WHERE run_id = ?`,
-          args: [
-            updated.status,
-            toJson(updated.input),
-            toJson(updated.output),
-            toJson(updated.error),
-            toJson(updated.executionContext),
-            toIsoString(updated.startedAt),
-            toIsoString(updated.completedAt),
-            nowStr,
-            id,
-          ] as InValue[],
-        });
+        await db
+          .update(schema.runs)
+          .set({
+            status: updated.status,
+            input: updated.input as unknown[],
+            output: updated.output,
+            error: updated.error,
+            executionContext: updated.executionContext,
+            startedAt: toIsoString(updated.startedAt),
+            completedAt: toIsoString(updated.completedAt),
+            updatedAt: nowStr,
+          })
+          .where(eq(schema.runs.runId, id));
 
         return updated;
       },
@@ -306,42 +289,39 @@ export function createStorage(config: StorageConfig): Storage {
         const limit = params?.pagination?.limit ?? 100;
         const cursor = params?.pagination?.cursor;
 
-        // Build the WHERE clause
-        const conditions: string[] = [];
-        const args: InValue[] = [];
+        // Build conditions
+        const conditions = [];
 
         if (params?.workflowName) {
-          conditions.push('workflow_name = ?');
-          args.push(params.workflowName);
+          conditions.push(eq(schema.runs.workflowName, params.workflowName));
         }
         if (params?.status) {
-          conditions.push('status = ?');
-          args.push(params.status);
+          conditions.push(eq(schema.runs.status, params.status));
         }
         if (cursor) {
           if (sortOrder === 'desc') {
-            conditions.push('run_id < ?');
+            conditions.push(lt(schema.runs.runId, cursor));
           } else {
-            conditions.push('run_id > ?');
+            conditions.push(gt(schema.runs.runId, cursor));
           }
-          args.push(cursor);
         }
 
-        const whereClause =
-          conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-        const orderClause = `ORDER BY run_id ${sortOrder === 'desc' ? 'DESC' : 'ASC'}`;
+        const query = db
+          .select()
+          .from(schema.runs)
+          .orderBy(
+            sortOrder === 'desc' ? desc(schema.runs.runId) : asc(schema.runs.runId)
+          )
+          .limit(limit + 1);
 
-        // Fetch one extra to check for hasMore
-        args.push(limit + 1);
+        const result =
+          conditions.length > 0
+            ? await query.where(and(...conditions))
+            : await query;
 
-        const result = await client.execute({
-          sql: `SELECT * FROM workflow_runs ${whereClause} ${orderClause} LIMIT ?`,
-          args,
-        });
-
-        const hasMore = result.rows.length > limit;
-        const rows = result.rows.slice(0, limit);
-        const data = rows.map((row) => rowToRun(row));
+        const hasMore = result.length > limit;
+        const rows = result.slice(0, limit);
+        const data = rows.map((row) => toWorkflowRun(row));
         const nextCursor = hasMore ? data[data.length - 1]?.runId : null;
 
         return {
@@ -373,23 +353,19 @@ export function createStorage(config: StorageConfig): Storage {
     steps: {
       async create(runId, data: CreateStepRequest): Promise<Step> {
         const now = new Date();
-        const nowStr = toIsoString(now);
+        const nowStr = now.toISOString();
         const id = `${runId}-${data.stepId}`;
 
-        await client.execute({
-          sql: `INSERT INTO workflow_steps
-                (id, run_id, step_id, step_name, status, input, output, error,
-                 attempt, started_at, completed_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'pending', ?, NULL, NULL, 0, NULL, NULL, ?, ?)`,
-          args: [
-            id,
-            runId,
-            data.stepId,
-            data.stepName ?? null,
-            toJson(data.input ?? []),
-            nowStr,
-            nowStr,
-          ] as InValue[],
+        await db.insert(schema.steps).values({
+          id,
+          runId,
+          stepId: data.stepId,
+          stepName: data.stepName ?? null,
+          status: 'pending',
+          input: (data.input ?? []) as unknown[],
+          attempt: 0,
+          createdAt: nowStr,
+          updatedAt: nowStr,
         });
 
         return {
@@ -413,25 +389,27 @@ export function createStorage(config: StorageConfig): Storage {
 
         if (!runId) {
           // Search all steps for this stepId
-          result = await client.execute({
-            sql: 'SELECT * FROM workflow_steps WHERE step_id = ? LIMIT 1',
-            args: [stepId],
-          });
+          result = await db
+            .select()
+            .from(schema.steps)
+            .where(eq(schema.steps.stepId, stepId))
+            .limit(1);
         } else {
           const id = `${runId}-${stepId}`;
-          result = await client.execute({
-            sql: 'SELECT * FROM workflow_steps WHERE id = ?',
-            args: [id],
-          });
+          result = await db
+            .select()
+            .from(schema.steps)
+            .where(eq(schema.steps.id, id))
+            .limit(1);
         }
 
-        if (result.rows.length === 0) {
+        if (result.length === 0) {
           throw new WorkflowAPIError(`Step not found: ${stepId}`, {
             status: 404,
           });
         }
 
-        const step = rowToStep(result.rows[0]);
+        const step = toStep(result[0]);
         return filterStepData(step, params?.resolveData);
       },
 
@@ -439,7 +417,7 @@ export function createStorage(config: StorageConfig): Storage {
         const id = `${runId}-${stepId}`;
         const existing = await this.get(runId, stepId);
         const now = new Date();
-        const nowStr = toIsoString(now);
+        const nowStr = now.toISOString();
 
         const updated: Step = {
           ...existing,
@@ -457,29 +435,19 @@ export function createStorage(config: StorageConfig): Storage {
           updated.completedAt = now;
         }
 
-        await client.execute({
-          sql: `UPDATE workflow_steps SET
-                status = ?,
-                input = ?,
-                output = ?,
-                error = ?,
-                attempt = ?,
-                started_at = ?,
-                completed_at = ?,
-                updated_at = ?
-                WHERE id = ?`,
-          args: [
-            updated.status,
-            toJson(updated.input),
-            toJson(updated.output),
-            toJson(updated.error),
-            updated.attempt,
-            toIsoString(updated.startedAt),
-            toIsoString(updated.completedAt),
-            nowStr,
-            id,
-          ] as InValue[],
-        });
+        await db
+          .update(schema.steps)
+          .set({
+            status: updated.status,
+            input: updated.input as unknown[],
+            output: updated.output,
+            error: updated.error,
+            attempt: updated.attempt,
+            startedAt: toIsoString(updated.startedAt),
+            completedAt: toIsoString(updated.completedAt),
+            updatedAt: nowStr,
+          })
+          .where(eq(schema.steps.id, id));
 
         return updated;
       },
@@ -488,17 +456,20 @@ export function createStorage(config: StorageConfig): Storage {
         const sortOrder = params.pagination?.sortOrder ?? 'desc';
         const limit = params.pagination?.limit ?? 100;
 
-        const result = await client.execute({
-          sql: `SELECT * FROM workflow_steps
-                WHERE run_id = ?
-                ORDER BY created_at ${sortOrder === 'desc' ? 'DESC' : 'ASC'}
-                LIMIT ?`,
-          args: [params.runId, limit + 1],
-        });
+        const result = await db
+          .select()
+          .from(schema.steps)
+          .where(eq(schema.steps.runId, params.runId))
+          .orderBy(
+            sortOrder === 'desc'
+              ? desc(schema.steps.createdAt)
+              : asc(schema.steps.createdAt)
+          )
+          .limit(limit + 1);
 
-        const hasMore = result.rows.length > limit;
-        const rows = result.rows.slice(0, limit);
-        const data = rows.map((row) => rowToStep(row));
+        const hasMore = result.length > limit;
+        const rows = result.slice(0, limit);
+        const data = rows.map((row) => toStep(row));
         const nextCursor = hasMore ? data[data.length - 1]?.stepId : null;
 
         return {
@@ -516,21 +487,15 @@ export function createStorage(config: StorageConfig): Storage {
       async create(runId, data: CreateEventRequest, params): Promise<Event> {
         const eventId = `wevt_${generateUlid()}`;
         const now = new Date();
-        const nowStr = toIsoString(now);
+        const nowStr = now.toISOString();
 
-        // Store the entire event data as payload JSON
-        await client.execute({
-          sql: `INSERT INTO workflow_events
-                (event_id, run_id, step_id, type, correlation_id, payload, created_at)
-                VALUES (?, ?, NULL, ?, ?, ?, ?)`,
-          args: [
-            eventId,
-            runId,
-            data.eventType,
-            data.correlationId ?? null,
-            toJson(data),
-            nowStr,
-          ] as InValue[],
+        await db.insert(schema.events).values({
+          eventId,
+          runId,
+          eventType: data.eventType,
+          correlationId: data.correlationId ?? null,
+          payload: data as Record<string, unknown>,
+          createdAt: nowStr,
         });
 
         const event: Event = {
@@ -550,31 +515,30 @@ export function createStorage(config: StorageConfig): Storage {
         const limit = params.pagination?.limit ?? 10000;
         const cursor = params.pagination?.cursor;
 
-        const conditions: string[] = ['run_id = ?'];
-        const args: InValue[] = [params.runId];
+        const conditions = [eq(schema.events.runId, params.runId)];
 
         if (cursor) {
           if (sortOrder === 'asc') {
-            conditions.push('event_id > ?');
+            conditions.push(gt(schema.events.eventId, cursor));
           } else {
-            conditions.push('event_id < ?');
+            conditions.push(lt(schema.events.eventId, cursor));
           }
-          args.push(cursor);
         }
 
-        const whereClause = conditions.join(' AND ');
-        const orderClause = `ORDER BY event_id ${sortOrder === 'asc' ? 'ASC' : 'DESC'}`;
+        const result = await db
+          .select()
+          .from(schema.events)
+          .where(and(...conditions))
+          .orderBy(
+            sortOrder === 'asc'
+              ? asc(schema.events.eventId)
+              : desc(schema.events.eventId)
+          )
+          .limit(limit + 1);
 
-        args.push(limit + 1);
-
-        const result = await client.execute({
-          sql: `SELECT * FROM workflow_events WHERE ${whereClause} ${orderClause} LIMIT ?`,
-          args,
-        });
-
-        const hasMore = result.rows.length > limit;
-        const rows = result.rows.slice(0, limit);
-        const data = rows.map((row) => rowToEvent(row));
+        const hasMore = result.length > limit;
+        const rows = result.slice(0, limit);
+        const data = rows.map((row) => toEvent(row));
         const nextCursor = hasMore ? data[data.length - 1]?.eventId : null;
 
         return {
@@ -588,17 +552,20 @@ export function createStorage(config: StorageConfig): Storage {
         const sortOrder = params.pagination?.sortOrder ?? 'asc';
         const limit = params.pagination?.limit ?? 100;
 
-        const result = await client.execute({
-          sql: `SELECT * FROM workflow_events
-                WHERE correlation_id = ?
-                ORDER BY event_id ${sortOrder === 'asc' ? 'ASC' : 'DESC'}
-                LIMIT ?`,
-          args: [params.correlationId, limit + 1],
-        });
+        const result = await db
+          .select()
+          .from(schema.events)
+          .where(eq(schema.events.correlationId, params.correlationId))
+          .orderBy(
+            sortOrder === 'asc'
+              ? asc(schema.events.eventId)
+              : desc(schema.events.eventId)
+          )
+          .limit(limit + 1);
 
-        const hasMore = result.rows.length > limit;
-        const rows = result.rows.slice(0, limit);
-        const data = rows.map((row) => rowToEvent(row));
+        const hasMore = result.length > limit;
+        const rows = result.slice(0, limit);
+        const data = rows.map((row) => toEvent(row));
         const nextCursor = hasMore ? data[data.length - 1]?.eventId : null;
 
         return {
@@ -615,26 +582,20 @@ export function createStorage(config: StorageConfig): Storage {
     hooks: {
       async create(runId, data: CreateHookRequest, params): Promise<Hook> {
         const now = new Date();
-        const nowStr = toIsoString(now);
+        const nowStr = now.toISOString();
 
         // Check for token uniqueness - if insert fails with UNIQUE constraint, throw 409
         try {
-          await client.execute({
-            sql: `INSERT INTO workflow_hooks
-                  (hook_id, run_id, token, display_name, metadata, owner_id, project_id,
-                   environment, received_at, disposed_at, created_at, updated_at)
-                  VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
-            args: [
-              data.hookId,
-              runId,
-              data.token,
-              toJson(data.metadata),
-              'turso-owner',
-              'turso-project',
-              'development',
-              nowStr,
-              nowStr,
-            ] as InValue[],
+          await db.insert(schema.hooks).values({
+            hookId: data.hookId,
+            runId,
+            token: data.token,
+            metadata: data.metadata,
+            ownerId: 'turso-owner',
+            projectId: 'turso-project',
+            environment: 'development',
+            createdAt: nowStr,
+            updatedAt: nowStr,
           });
         } catch (error) {
           // Check if this is a UNIQUE constraint violation
@@ -667,34 +628,36 @@ export function createStorage(config: StorageConfig): Storage {
       },
 
       async get(hookId, params): Promise<Hook> {
-        const result = await client.execute({
-          sql: 'SELECT * FROM workflow_hooks WHERE hook_id = ?',
-          args: [hookId],
-        });
+        const result = await db
+          .select()
+          .from(schema.hooks)
+          .where(eq(schema.hooks.hookId, hookId))
+          .limit(1);
 
-        if (result.rows.length === 0) {
+        if (result.length === 0) {
           throw new WorkflowAPIError(`Hook not found: ${hookId}`, {
             status: 404,
           });
         }
 
-        const hook = rowToHook(result.rows[0]);
+        const hook = toHook(result[0]);
         return filterHookData(hook, params?.resolveData);
       },
 
       async getByToken(token, params): Promise<Hook> {
-        const result = await client.execute({
-          sql: 'SELECT * FROM workflow_hooks WHERE token = ?',
-          args: [token],
-        });
+        const result = await db
+          .select()
+          .from(schema.hooks)
+          .where(eq(schema.hooks.token, token))
+          .limit(1);
 
-        if (result.rows.length === 0) {
+        if (result.length === 0) {
           throw new WorkflowAPIError(`Hook not found for token: ${token}`, {
             status: 404,
           });
         }
 
-        const hook = rowToHook(result.rows[0]);
+        const hook = toHook(result[0]);
         return filterHookData(hook, params?.resolveData);
       },
 
@@ -703,20 +666,18 @@ export function createStorage(config: StorageConfig): Storage {
 
         let result;
         if (params.runId) {
-          result = await client.execute({
-            sql: 'SELECT * FROM workflow_hooks WHERE run_id = ? LIMIT ?',
-            args: [params.runId, limit + 1],
-          });
+          result = await db
+            .select()
+            .from(schema.hooks)
+            .where(eq(schema.hooks.runId, params.runId))
+            .limit(limit + 1);
         } else {
-          result = await client.execute({
-            sql: 'SELECT * FROM workflow_hooks LIMIT ?',
-            args: [limit + 1],
-          });
+          result = await db.select().from(schema.hooks).limit(limit + 1);
         }
 
-        const hasMore = result.rows.length > limit;
-        const rows = result.rows.slice(0, limit);
-        const data = rows.map((row) => rowToHook(row));
+        const hasMore = result.length > limit;
+        const rows = result.slice(0, limit);
+        const data = rows.map((row) => toHook(row));
         const nextCursor = hasMore ? data[data.length - 1]?.hookId : null;
 
         return {
@@ -729,10 +690,7 @@ export function createStorage(config: StorageConfig): Storage {
       async dispose(hookId, params): Promise<Hook> {
         const hook = await this.get(hookId);
 
-        await client.execute({
-          sql: 'DELETE FROM workflow_hooks WHERE hook_id = ?',
-          args: [hookId],
-        });
+        await db.delete(schema.hooks).where(eq(schema.hooks.hookId, hookId));
 
         return filterHookData(hook, params?.resolveData);
       },

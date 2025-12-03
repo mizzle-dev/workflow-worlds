@@ -4,6 +4,11 @@
  * Serialization helpers for converting between JavaScript objects and Redis Hash fields.
  */
 
+import { encode as cborEncode, decode as cborDecode } from 'cbor-x';
+
+// CBOR prefix for encoded data
+const CBOR_PREFIX = 'cbor:';
+
 // =============================================================================
 // Debug Logging
 // =============================================================================
@@ -53,7 +58,7 @@ function createDebugLogger(namespace: string) {
  */
 export const debug = createDebugLogger('redis-world');
 
-// Fields that should be parsed as Date objects
+// Fields that should be parsed as Date objects (top-level only)
 const DATE_FIELDS = new Set([
   'createdAt',
   'updatedAt',
@@ -82,10 +87,39 @@ const STRING_FIELDS = new Set([
   'eventType',
 ]);
 
+// =============================================================================
+// CBOR Serialization
+// =============================================================================
+
+/**
+ * Encodes a value using CBOR and returns a base64 string with prefix.
+ * CBOR preserves Date, undefined, Map, Set, BigInt types automatically.
+ */
+export function toCbor(value: unknown): string {
+  const buffer = cborEncode(value);
+  return CBOR_PREFIX + Buffer.from(buffer).toString('base64');
+}
+
+/**
+ * Decodes a CBOR-encoded string (with prefix) back to original value.
+ * Returns undefined if the input is null/undefined or not CBOR-encoded.
+ */
+export function fromCbor<T>(value: string | null | undefined): T | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (!value.startsWith(CBOR_PREFIX)) {
+    return undefined;
+  }
+  const base64 = value.slice(CBOR_PREFIX.length);
+  const buffer = Buffer.from(base64, 'base64');
+  return cborDecode(buffer) as T;
+}
+
 /**
  * Serializes a JavaScript object for Redis Hash storage.
  * - Date objects are converted to ISO strings
- * - Objects/arrays are JSON stringified
+ * - Objects/arrays are CBOR encoded (preserves nested Date types)
  * - undefined values are skipped
  * - null values are stored as empty string
  */
@@ -97,13 +131,20 @@ export function serializeForRedis(obj: Record<string, unknown>): Record<string, 
       continue;
     }
     if (value === null) {
-      result[key] = '';
+      // Store null as special marker to distinguish from undefined and empty string
+      result[key] = '\x00null';
+      continue;
+    }
+    if (value === '') {
+      // Store empty string as special marker to distinguish from undefined
+      result[key] = '\x00empty';
       continue;
     }
     if (value instanceof Date) {
       result[key] = value.toISOString();
     } else if (typeof value === 'object') {
-      result[key] = JSON.stringify(value);
+      // Use CBOR for objects - preserves Date, Map, Set, BigInt, undefined
+      result[key] = toCbor(value);
     } else if (typeof value === 'boolean') {
       result[key] = value ? 'true' : 'false';
     } else {
@@ -116,8 +157,8 @@ export function serializeForRedis(obj: Record<string, unknown>): Record<string, 
 
 /**
  * Deserializes Redis Hash fields back to a JavaScript object.
+ * - CBOR-prefixed strings are decoded with full type preservation
  * - ISO date strings in known date fields are converted to Date objects
- * - JSON strings are parsed back to objects/arrays
  * - Empty strings become undefined
  * - Boolean strings are converted to booleans
  * - Numeric strings are converted to numbers (except for ID fields)
@@ -138,7 +179,25 @@ export function deserializeFromRedis<T = Record<string, unknown>>(
       continue;
     }
 
-    // Date fields
+    // Special marker for null
+    if (value === '\x00null') {
+      result[key] = null;
+      continue;
+    }
+
+    // Special marker for empty string
+    if (value === '\x00empty') {
+      result[key] = '';
+      continue;
+    }
+
+    // CBOR-encoded objects (new format) - handles nested Dates automatically
+    if (value.startsWith(CBOR_PREFIX)) {
+      result[key] = fromCbor(value);
+      continue;
+    }
+
+    // Date fields (top-level only)
     if (DATE_FIELDS.has(key)) {
       result[key] = new Date(value);
       continue;
@@ -152,16 +211,6 @@ export function deserializeFromRedis<T = Record<string, unknown>>(
     if (value === 'false') {
       result[key] = false;
       continue;
-    }
-
-    // JSON objects/arrays
-    if (value.startsWith('{') || value.startsWith('[')) {
-      try {
-        result[key] = JSON.parse(value);
-        continue;
-      } catch {
-        // Not valid JSON, treat as string
-      }
     }
 
     // String fields (keep as string even if numeric)

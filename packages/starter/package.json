@@ -1,6 +1,6 @@
 {
   "name": "@workflow-worlds/starter",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Starter template for building Workflow DevKit Worlds",
   "author": "Dustin Townsend",
   "license": "MIT",
@@ -38,6 +38,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@workflow/world-testing": "4.0.1-beta.23",
+    "@workflow-worlds/testing": "workspace:*",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },
