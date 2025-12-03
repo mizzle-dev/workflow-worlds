@@ -1,13 +1,17 @@
 /**
  * Shared test setup for MongoDB World
  *
- * Manages MongoDB container lifecycle and provides factory functions.
+ * This file is loaded by vitest's setupFiles config.
+ * It manages the MongoDB container lifecycle.
+ *
+ * If WORKFLOW_MONGODB_URI is already set (e.g., by GitHub Actions services),
+ * testcontainers will be skipped.
  */
 
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MongoDBContainer } from '@testcontainers/mongodb';
-import { afterAll, beforeAll } from 'vitest';
+import { beforeAll, afterAll } from 'vitest';
 import { MongoClient } from 'mongodb';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -16,6 +20,12 @@ let container: Awaited<ReturnType<typeof MongoDBContainer.prototype.start>> | nu
 let mongoClient: MongoClient | undefined;
 
 beforeAll(async () => {
+  // Skip testcontainers if env var is already set (e.g., GitHub Actions services)
+  if (process.env.WORKFLOW_MONGODB_URI) {
+    console.log('Using existing MongoDB:', process.env.WORKFLOW_MONGODB_URI);
+    return;
+  }
+
   console.log('Starting MongoDB container...');
   container = await new MongoDBContainer('mongo:7').start();
 
@@ -46,7 +56,7 @@ function getMongoClient(): MongoClient {
 
 export const worldPath = join(__dirname, '..', 'dist', 'index.js');
 
-export const createStorage = async () => {
+export async function createStorage() {
   const mod = await import(join(__dirname, '..', 'dist', 'storage.js'));
   const client = getMongoClient();
   await client.connect();
@@ -56,9 +66,9 @@ export const createStorage = async () => {
     databaseName: 'test-extended',
   });
   return { storage };
-};
+}
 
-export const createStreamer = async () => {
+export async function createStreamer() {
   const mod = await import(join(__dirname, '..', 'dist', 'streamer.js'));
   const client = getMongoClient();
   await client.connect();
@@ -69,4 +79,4 @@ export const createStreamer = async () => {
     useChangeStreams: false,
   });
   return { streamer };
-};
+}

@@ -3,6 +3,9 @@
  *
  * This file is loaded by vitest's setupFiles config.
  * It manages the Redis container lifecycle.
+ *
+ * If WORKFLOW_REDIS_URI is already set (e.g., by GitHub Actions services),
+ * testcontainers will be skipped.
  */
 
 import { dirname, join } from 'node:path';
@@ -13,10 +16,16 @@ import { Redis } from 'ioredis';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-let container: Awaited<ReturnType<RedisContainer['start']>>;
+let container: Awaited<ReturnType<RedisContainer['start']>> | null = null;
 let redisClient: Redis | undefined;
 
 beforeAll(async () => {
+  // Skip testcontainers if env var is already set (e.g., GitHub Actions services)
+  if (process.env.WORKFLOW_REDIS_URI) {
+    console.log('[test] Using existing Redis:', process.env.WORKFLOW_REDIS_URI);
+    return;
+  }
+
   container = await new RedisContainer('redis:7-alpine').start();
   process.env.WORKFLOW_REDIS_URI = container.getConnectionUrl();
   console.log(`[test] Redis container started at ${process.env.WORKFLOW_REDIS_URI}`);
