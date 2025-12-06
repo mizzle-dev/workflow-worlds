@@ -237,5 +237,126 @@ export function hookCleanupTests(options: HookTestOptions) {
         await expect(storage.hooks.getByToken(token)).rejects.toThrow();
       }
     });
+
+    test('webhook flow: creates and retrieves hooks with random tokens', async () => {
+      // This test mimics the e2e webhookWorkflow test pattern:
+      // 1. Generate random tokens (like Math.random().toString(36).slice(2))
+      // 2. Create hooks with those tokens
+      // 3. Immediately look them up by token
+      // 4. Verify they can be found
+
+      const generateToken = () => Math.random().toString(36).slice(2);
+      const tokens = [generateToken(), generateToken(), generateToken()];
+
+      const run = await storage.runs.create({
+        deploymentId: 'test-deployment',
+        workflowName: 'webhookWorkflow',
+        input: tokens,
+      });
+
+      // Update to running status (simulating workflow execution)
+      await storage.runs.update(run.runId, { status: 'running' });
+
+      // Create hooks for each token (simulating workflow.waitForWebhook())
+      const createdHooks = [];
+      for (let i = 0; i < tokens.length; i++) {
+        const hook = await storage.hooks.create(run.runId, {
+          hookId: `whook_webhook-${i}-${Date.now()}`,
+          token: tokens[i],
+          metadata: { index: i, tokenLength: tokens[i].length },
+        });
+        createdHooks.push(hook);
+      }
+
+      // Immediately verify all hooks can be retrieved by token
+      // This is the critical test - the webhook endpoint must find hooks by token
+      for (let i = 0; i < tokens.length; i++) {
+        const retrieved = await storage.hooks.getByToken(tokens[i]);
+        expect(retrieved.token).toBe(tokens[i]);
+        expect(retrieved.runId).toBe(run.runId);
+        expect(retrieved.hookId).toBe(createdHooks[i].hookId);
+      }
+
+      // Clean up
+      await storage.runs.update(run.runId, { status: 'completed', output: {} });
+    });
+
+    test('webhook flow: handles concurrent hook creation and lookup', async () => {
+      // Test concurrent operations to catch any race conditions
+
+      const run = await storage.runs.create({
+        deploymentId: 'test-deployment',
+        workflowName: 'concurrent-webhook-test',
+        input: [],
+      });
+
+      await storage.runs.update(run.runId, { status: 'running' });
+
+      // Create multiple hooks concurrently
+      const tokens = Array.from({ length: 5 }, () => Math.random().toString(36).slice(2));
+      const createPromises = tokens.map((token, i) =>
+        storage.hooks.create(run.runId, {
+          hookId: `whook_concurrent-${i}-${Date.now()}`,
+          token,
+          metadata: { index: i },
+        })
+      );
+
+      await Promise.all(createPromises);
+
+      // Look up all hooks concurrently
+      const lookupPromises = tokens.map((token) => storage.hooks.getByToken(token));
+      const retrievedHooks = await Promise.all(lookupPromises);
+
+      // Verify all hooks were found
+      for (let i = 0; i < tokens.length; i++) {
+        expect(retrievedHooks[i].token).toBe(tokens[i]);
+        expect(retrievedHooks[i].runId).toBe(run.runId);
+      }
+
+      // Clean up
+      await storage.runs.update(run.runId, { status: 'completed', output: {} });
+    });
+
+    test('webhook flow: getByToken returns 404 for non-existent token', async () => {
+      const nonExistentToken = `non-existent-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      await expect(storage.hooks.getByToken(nonExistentToken)).rejects.toThrow();
+
+      // Also verify the error has the correct status
+      try {
+        await storage.hooks.getByToken(nonExistentToken);
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(WorkflowAPIError);
+        expect((error as WorkflowAPIError).status).toBe(404);
+      }
+    });
+
+    test('webhook flow: getByToken finds hook immediately after creation', async () => {
+      // This test verifies there's no delay between hook creation and visibility
+
+      const run = await storage.runs.create({
+        deploymentId: 'test-deployment',
+        workflowName: 'immediate-lookup-test',
+        input: [],
+      });
+
+      const token = `immediate-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      // Create and immediately lookup - this should always succeed
+      await storage.hooks.create(run.runId, {
+        hookId: `whook_immediate-${Date.now()}`,
+        token,
+        metadata: {},
+      });
+
+      // No delay between create and getByToken
+      const retrieved = await storage.hooks.getByToken(token);
+      expect(retrieved.token).toBe(token);
+
+      // Clean up
+      await storage.runs.update(run.runId, { status: 'completed', output: {} });
+    });
   });
 }

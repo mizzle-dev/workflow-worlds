@@ -21,6 +21,7 @@ import type {
 import { WorkflowAPIError } from '@workflow/errors';
 import { MongoClient } from 'mongodb';
 import { monotonicFactory } from 'ulid';
+import { debug } from './utils.js';
 
 // Monotonic ULID factory ensures IDs are always increasing
 const generateUlid = monotonicFactory();
@@ -560,14 +561,7 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
     // =========================================================================
     hooks: {
       async create(runId, data: CreateHookRequest, params): Promise<Hook> {
-        // Check for token uniqueness
-        const existing = await hooksCollection.findOne({ token: data.token });
-        if (existing) {
-          throw new WorkflowAPIError(
-            `Hook with token ${data.token} already exists`,
-            { status: 409 }
-          );
-        }
+        debug('hooks.create called:', { runId, hookId: data.hookId, token: data.token });
 
         const now = new Date();
         const hook: HookDocument = {
@@ -581,27 +575,54 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
           createdAt: now,
         };
 
-        await hooksCollection.insertOne(hook);
+        try {
+          // Use atomic insert - the unique index on token enforces uniqueness
+          await hooksCollection.insertOne(hook);
+          debug('hooks.create succeeded:', { hookId: data.hookId, token: data.token });
+        } catch (error: unknown) {
+          // Check for duplicate key error (code 11000)
+          if (
+            error &&
+            typeof error === 'object' &&
+            'code' in error &&
+            (error as { code: number }).code === 11000
+          ) {
+            debug('hooks.create duplicate token:', { token: data.token });
+            throw new WorkflowAPIError(
+              `Hook with token ${data.token} already exists`,
+              { status: 409 }
+            );
+          }
+          debug('hooks.create error:', error);
+          throw error;
+        }
+
         return filterHookData(hook as Hook, params?.resolveData);
       },
 
       async get(hookId, params): Promise<Hook> {
+        debug('hooks.get called:', { hookId });
         const hook = await hooksCollection.findOne({ hookId });
         if (!hook) {
+          debug('hooks.get not found:', { hookId });
           throw new WorkflowAPIError(`Hook not found: ${hookId}`, {
             status: 404,
           });
         }
+        debug('hooks.get found:', { hookId, token: hook.token });
         return filterHookData(hook as Hook, params?.resolveData);
       },
 
       async getByToken(token, params): Promise<Hook> {
+        debug('hooks.getByToken called:', { token });
         const hook = await hooksCollection.findOne({ token });
         if (!hook) {
+          debug('hooks.getByToken not found:', { token });
           throw new WorkflowAPIError(`Hook not found for token: ${token}`, {
             status: 404,
           });
         }
+        debug('hooks.getByToken found:', { hookId: hook.hookId, runId: hook.runId });
         return filterHookData(hook as Hook, params?.resolveData);
       },
 
