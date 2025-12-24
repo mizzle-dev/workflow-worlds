@@ -136,15 +136,161 @@ All implementations already use `WorkflowAPIError` with status 409 for duplicate
 
 ---
 
+## Backwards Compatibility Strategy
+
+### Recommended Approach: Phased Rollout
+
+We recommend a **3-phase rollout** to ensure zero-downtime migrations for users with existing data.
+
+---
+
+### Phase A: Add Compatibility Layer (Pre-PR merge)
+
+Deploy world updates that **read both old and new field names** while **writing to new names only**.
+
+#### Step Field: `startedAt` → `firstStartedAt`
+
+```typescript
+// In toStep() or equivalent conversion function:
+function toStep(row: StepRow): Step {
+  return {
+    // ... other fields
+    // Read new field, fall back to old field for existing data
+    firstStartedAt: row.firstStartedAt ?? row.startedAt ?? undefined,
+    // Keep startedAt for backwards compat during transition
+    startedAt: row.firstStartedAt ?? row.startedAt ?? undefined,
+  };
+}
+
+// In steps.update():
+async update(runId, stepId, data) {
+  // Write to new field name
+  if (data.status === 'running' && !existing.firstStartedAt) {
+    updated.firstStartedAt = now;
+  }
+}
+```
+
+#### Pause/Resume: Deprecation Warnings
+
+```typescript
+// Keep methods but mark deprecated and log warnings
+async pause(id, params): Promise<WorkflowRun> {
+  console.warn('[DEPRECATED] runs.pause() will be removed in next major version');
+  const run = await this.update(id, { status: 'paused' });
+  return filterRunData(run, params?.resolveData);
+},
+
+async resume(id, params): Promise<WorkflowRun> {
+  console.warn('[DEPRECATED] runs.resume() will be removed in next major version');
+  const run = await this.update(id, { status: 'running' });
+  return filterRunData(run, params?.resolveData);
+},
+```
+
+---
+
+### Phase B: Data Migration (Post-PR merge)
+
+Once `@workflow/world` is updated with new types, run migrations to update existing data.
+
+#### MongoDB Migration Script
+
+```javascript
+// Rename startedAt → firstStartedAt in steps collection
+db.steps.updateMany(
+  { startedAt: { $exists: true }, firstStartedAt: { $exists: false } },
+  [{ $set: { firstStartedAt: "$startedAt" } }, { $unset: "startedAt" }]
+);
+
+// Update any paused runs to cancelled (or running, depending on preference)
+db.runs.updateMany(
+  { status: "paused" },
+  { $set: { status: "cancelled", updatedAt: new Date() } }
+);
+```
+
+#### Redis Migration Script
+
+```typescript
+// Scan for step keys and rename field
+const stepKeys = await redis.keys('workflow:steps:*');
+for (const key of stepKeys) {
+  const startedAt = await redis.hget(key, 'startedAt');
+  if (startedAt) {
+    await redis.hset(key, 'firstStartedAt', startedAt);
+    await redis.hdel(key, 'startedAt');
+  }
+}
+```
+
+#### Turso/SQLite Migration
+
+```sql
+-- Add new column
+ALTER TABLE workflow_steps ADD COLUMN first_started_at TEXT;
+
+-- Copy data
+UPDATE workflow_steps SET first_started_at = started_at WHERE started_at IS NOT NULL;
+
+-- Note: SQLite doesn't support DROP COLUMN easily
+-- Option 1: Leave old column (harmless, just unused)
+-- Option 2: Recreate table without old column
+
+-- Handle paused runs
+UPDATE workflow_runs SET status = 'cancelled', updated_at = datetime('now')
+WHERE status = 'paused';
+```
+
+---
+
+### Phase C: Remove Compatibility Code
+
+After sufficient time (e.g., 2-4 weeks) or after confirming all users have migrated:
+
+1. Remove `startedAt` fallback reads
+2. Remove deprecated `pause()`/`resume()` methods
+3. Remove old column from schema (optional for Turso)
+
+---
+
+## Alternative: Big Bang Migration
+
+If backwards compatibility isn't critical (e.g., new deployments, test environments):
+
+1. Update `@workflow/world` dependency
+2. Apply all changes at once
+3. Run data migration scripts
+4. Deploy
+
+**Pros:** Simpler, no dual-field logic
+**Cons:** Requires downtime or careful coordination
+
+---
+
+## Rollout Checklist
+
+### Phase A (Compatibility Layer)
+- [ ] Add `firstStartedAt` field alongside `startedAt` in all worlds
+- [ ] Add deprecation warnings to `pause()`/`resume()`
+- [ ] Test with existing data
+- [ ] Deploy to production
+
+### Phase B (Migration)
+- [ ] Wait for PR #621 to merge
+- [ ] Update `@workflow/world` dependency
+- [ ] Run migration scripts per backend
+- [ ] Verify data integrity
+
+### Phase C (Cleanup)
+- [ ] Remove `startedAt` fallback logic
+- [ ] Remove `pause()`/`resume()` methods
+- [ ] Update types to match new `@workflow/world`
+- [ ] Final testing and deployment
+
+---
+
 ## Considerations
-
-### Backwards Compatibility
-
-The PR notes: "New event logs that use this published version of `workflow` will be incompatible with previous workflow version event logs."
-
-For World implementations:
-- Existing data with `startedAt` field will need migration or aliasing
-- Consider adding compatibility shim during transition
 
 ### Event Sourcing Architecture
 
