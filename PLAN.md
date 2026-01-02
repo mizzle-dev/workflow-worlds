@@ -6,6 +6,29 @@ This plan addresses the breaking changes from [vercel/workflow#621](https://gith
 
 ---
 
+## PR Status (as of 2026-01-02)
+
+| Item | Status |
+|------|--------|
+| **PR State** | Draft |
+| **Commits** | 28 |
+| **Changes** | +14,912 / -4,025 across 198 files |
+| **Dependency** | Blocked on `workflow-server` PR #154 |
+
+### Test Results
+
+| Environment | Status |
+|-------------|--------|
+| Local Development | ✅ 262 passed |
+| Local Production | ✅ 262 passed |
+| Vercel Production | ⚠️ 183 passed, 103 failed |
+| Local Postgres | ⚠️ 261 passed, 1 failed |
+| **Community Worlds** | ❌ 12 passed, 108 failed |
+
+> **Note:** The 108 Community Worlds test failures indicate that world implementations (like ours) will definitely need updates once the PR merges.
+
+---
+
 ## Breaking Changes Overview
 
 ### 1. Step Field Rename: `startedAt` → `firstStartedAt`
@@ -77,6 +100,11 @@ This plan addresses the breaking changes from [vercel/workflow#621](https://gith
 
 **Status:** No changes needed
 All implementations already use `WorkflowAPIError` with status 409 for duplicate tokens.
+
+### 6. Step Field Rename: `lastKnownError` → `error` (Already Implemented ✓)
+
+**Status:** No changes needed
+The PR renames `lastKnownError` to `error` for consistency with server. Our implementations already use `error` field - verified via codebase search showing no usage of `lastKnownError`.
 
 ---
 
@@ -299,7 +327,18 @@ The PR introduces event sourcing where entities are "materializations of the eve
 - The core runtime handles the event-to-entity materialization
 - No fundamental changes to World interface expected
 
-### Timing
+### Timing & Dependencies
+
+**Current blockers for PR #621:**
+1. PR is still in **Draft** status
+2. Depends on `workflow-server` PR #154 merging first
+3. Significant test failures to resolve (103 in Vercel Production, 108 in Community Worlds)
+4. Awaiting code review approval
+
+**Recommended action:**
+- Monitor PR #621 for status changes
+- Begin Phase A (compatibility layer) proactively to minimize migration time
+- Wait for `@workflow/world` package update before Phase B/C
 
 These changes should be implemented **after** PR #621 is merged and a new `@workflow/world` package version is published. Until then, the type definitions from `@workflow/world` won't reflect these changes.
 
