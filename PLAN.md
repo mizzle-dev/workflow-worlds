@@ -6,26 +6,31 @@ This plan addresses the breaking changes from [vercel/workflow#621](https://gith
 
 ---
 
-## PR Status (as of 2026-01-02)
+## PR Status (as of 2026-01-10)
 
 | Item | Status |
 |------|--------|
-| **PR State** | Draft |
-| **Commits** | 28 |
+| **PR State** | ✅ Ready for Review (changed from Draft on 2025-12-16) |
+| **Last Commit** | `9d01b15` (2026-01-06) - "Regenerate postgres migration" |
 | **Changes** | +14,912 / -4,025 across 198 files |
-| **Dependency** | Blocked on `workflow-server` PR #154 |
+| **Dependency** | `workflow-server` PR #154 (status pending) |
+| **Reviews** | Copilot AI reviewed, VaguelySerious reviewed, awaiting TooTallNate |
 
 ### Test Results
 
 | Environment | Status |
 |-------------|--------|
-| Local Development | ✅ 262 passed |
-| Local Production | ✅ 262 passed |
-| Vercel Production | ⚠️ 183 passed, 103 failed |
-| Local Postgres | ⚠️ 261 passed, 1 failed |
-| **Community Worlds** | ❌ 12 passed, 108 failed |
+| Local Development | ✅ 342/350 passed |
+| Local Production | ✅ 342/350 passed |
+| Local Postgres | ✅ 342/350 passed |
+| Vercel Production | ⚠️ 374/385 passed |
+| **Community Worlds** | ❌ 128 failures (MongoDB, Redis, Starter, Turso) |
 
-> **Note:** The 108 Community Worlds test failures indicate that world implementations (like ours) will definitely need updates once the PR merges.
+> **Note:** The 128 Community Worlds test failures across all 4 backends confirm that world implementations will need updates once the PR merges.
+
+### Reviewer Feedback
+- VaguelySerious suggested `specVersion` and pause/resume removal "could be shipped separately and quickly"
+- Requires at least 1 approving review to merge
 
 ---
 
@@ -106,6 +111,42 @@ All implementations already use `WorkflowAPIError` with status 409 for duplicate
 **Status:** No changes needed
 The PR renames `lastKnownError` to `error` for consistency with server. Our implementations already use `error` field - verified via codebase search showing no usage of `lastKnownError`.
 
+### 7. New `specVersion` Property on World Interface (NEW)
+
+**Impact:** All 4 world implementations
+**Reason:** Enables server to route operations based on the world version that created the run
+
+The World interface now requires a `specVersion` property that exposes the npm package version. This allows the server to handle version-specific behavior.
+
+**Implementation:**
+```typescript
+// In each world's index.ts
+import { version } from '../package.json';
+
+export default function createWorld(): World {
+  return {
+    specVersion: version,
+    // ... rest of implementation
+  };
+}
+```
+
+**Files to update:**
+- `packages/starter/src/index.ts`
+- `packages/mongodb/src/index.ts`
+- `packages/redis/src/index.ts`
+- `packages/turso/src/index.ts`
+
+### 8. New `hook_conflict` Event Type
+
+**Impact:** Documentation only
+**Reason:** Better observability for duplicate token detection
+
+New event type `hook_conflict` is emitted when a duplicate hook token is detected.
+
+**Files to update:**
+- `docs/02-interface-reference.md` - Add to EventType union
+
 ---
 
 ## Implementation Tasks
@@ -118,25 +159,21 @@ The PR renames `lastKnownError` to `error` for consistency with server. Our impl
 
 ### Phase 2: Storage Implementation Updates
 
-2. **Starter World** (`packages/starter/src/storage.ts`)
-   - Rename `startedAt` → `firstStartedAt` in Step interface usage
-   - Update timestamp logic for `firstStartedAt`
-   - Remove `pause()` and `resume()` methods from runs
+2. **Starter World**
+   - `packages/starter/src/index.ts` - Add `specVersion` property
+   - `packages/starter/src/storage.ts` - Rename `startedAt` → `firstStartedAt`, remove `pause()`/`resume()`
 
-3. **MongoDB World** (`packages/mongodb/src/storage.ts`)
-   - Rename `startedAt` → `firstStartedAt` in StepDocument interface
-   - Update timestamp logic
-   - Remove `pause()` and `resume()` methods
+3. **MongoDB World**
+   - `packages/mongodb/src/index.ts` - Add `specVersion` property
+   - `packages/mongodb/src/storage.ts` - Rename `startedAt` → `firstStartedAt`, remove `pause()`/`resume()`
 
-4. **Redis World** (`packages/redis/src/storage.ts`)
-   - Rename `startedAt` → `firstStartedAt` in Step handling
-   - Update timestamp logic
-   - Remove `pause()` and `resume()` methods
+4. **Redis World**
+   - `packages/redis/src/index.ts` - Add `specVersion` property
+   - `packages/redis/src/storage.ts` - Rename `startedAt` → `firstStartedAt`, remove `pause()`/`resume()`
 
-5. **Turso World** (`packages/turso/src/storage.ts`)
-   - Update `toStep()` conversion function
-   - Update timestamp logic
-   - Remove `pause()` and `resume()` methods
+5. **Turso World**
+   - `packages/turso/src/index.ts` - Add `specVersion` property
+   - `packages/turso/src/storage.ts` - Update `toStep()`, remove `pause()`/`resume()`
 
 ### Phase 3: Documentation Updates
 
@@ -146,7 +183,9 @@ The PR renames `lastKnownError` to `error` for consistency with server. Our impl
    - Remove `paused` from WorkflowRunStatus
    - Add new run lifecycle events to EventType
    - Add `step_retrying` to CreateEventRequest
+   - Add `hook_conflict` to EventType
    - Remove `fatal` field from `step_failed` event data
+   - Document new `specVersion` property on World interface
 
 7. **Patterns & Practices** (`docs/04-patterns-and-practices.md`)
    - Update timestamp management section
@@ -329,15 +368,16 @@ The PR introduces event sourcing where entities are "materializations of the eve
 
 ### Timing & Dependencies
 
-**Current blockers for PR #621:**
-1. PR is still in **Draft** status
-2. Depends on `workflow-server` PR #154 merging first
-3. Significant test failures to resolve (103 in Vercel Production, 108 in Community Worlds)
-4. Awaiting code review approval
+**Current status of PR #621:**
+1. ✅ PR is now **Ready for Review** (no longer draft)
+2. ⏳ Depends on `workflow-server` PR #154 (status pending)
+3. ⏳ Awaiting final review from TooTallNate
+4. ⚠️ 128 Community Worlds test failures to address
 
 **Recommended action:**
-- Monitor PR #621 for status changes
+- PR is progressing - prepare for imminent changes
 - Begin Phase A (compatibility layer) proactively to minimize migration time
+- `specVersion` change may ship separately (per reviewer feedback)
 - Wait for `@workflow/world` package update before Phase B/C
 
 These changes should be implemented **after** PR #621 is merged and a new `@workflow/world` package version is published. Until then, the type definitions from `@workflow/world` won't reflect these changes.
@@ -346,13 +386,19 @@ These changes should be implemented **after** PR #621 is merged and a new `@work
 
 ## Checklist
 
-- [ ] Turso schema migration prepared
-- [ ] Starter world updated
-- [ ] MongoDB world updated
-- [ ] Redis world updated
-- [ ] Turso world updated
-- [ ] Interface reference docs updated
-- [ ] Patterns & practices docs updated
+### Code Changes
+- [ ] Turso schema migration prepared (`first_started_at` column)
+- [ ] Starter world: Add `specVersion`, update storage
+- [ ] MongoDB world: Add `specVersion`, update storage
+- [ ] Redis world: Add `specVersion`, update storage
+- [ ] Turso world: Add `specVersion`, update storage
+
+### Documentation
+- [ ] Interface reference docs updated (new events, specVersion, field renames)
+- [ ] Patterns & practices docs updated (state machine, timestamps)
 - [ ] CLAUDE.md reviewed/updated
+
+### Validation
 - [ ] All packages build successfully
 - [ ] All tests pass
+- [ ] Backwards compatibility verified with existing data
