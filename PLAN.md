@@ -10,7 +10,7 @@ This plan addresses the breaking changes from [vercel/workflow#621](https://gith
 
 | Item | Status |
 |------|--------|
-| **PR State** | ✅ Ready for Review (changed from Draft on 2025-12-16) |
+| **PR State** | 🚧 Draft |
 | **Last Commit** | `9d01b15` (2026-01-06) - "Regenerate postgres migration" |
 | **Changes** | +14,912 / -4,025 across 198 files |
 | **Dependency** | `workflow-server` PR #154 (status pending) |
@@ -369,13 +369,13 @@ The PR introduces event sourcing where entities are "materializations of the eve
 ### Timing & Dependencies
 
 **Current status of PR #621:**
-1. ✅ PR is now **Ready for Review** (no longer draft)
+1. 🚧 PR is still in **Draft** status
 2. ⏳ Depends on `workflow-server` PR #154 (status pending)
-3. ⏳ Awaiting final review from TooTallNate
+3. ⏳ Awaiting reviews
 4. ⚠️ 128 Community Worlds test failures to address
 
 **Recommended action:**
-- PR is progressing - prepare for imminent changes
+- Monitor PR #621 for status changes
 - Begin Phase A (compatibility layer) proactively to minimize migration time
 - `specVersion` change may ship separately (per reviewer feedback)
 - Wait for `@workflow/world` package update before Phase B/C
