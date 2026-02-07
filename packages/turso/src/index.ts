@@ -22,11 +22,15 @@
  * - PORT: HTTP server port (fallback for service URL)
  */
 
+import { createRequire } from 'node:module';
 import { createClient, type Client } from '@libsql/client';
 import type { World } from '@workflow/world';
 import { createQueue } from './queue.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
+
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json') as { version: string };
 
 /**
  * Configuration for the Turso World.
@@ -165,6 +169,9 @@ export function createWorld(config: TursoWorldConfig = {}): World {
 
   // Return a World with lazy initialization
   return {
+    // World spec version for server routing
+    specVersion: version,
+
     // =========================================================================
     // RUNS
     // =========================================================================
@@ -188,14 +195,6 @@ export function createWorld(config: TursoWorldConfig = {}): World {
       async cancel(id, params) {
         const { storage } = await ensureInitialized();
         return storage.runs.cancel(id, params);
-      },
-      async pause(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.pause(id, params);
-      },
-      async resume(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.resume(id, params);
       },
     },
 

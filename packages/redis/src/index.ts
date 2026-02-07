@@ -5,8 +5,12 @@
  * BullMQ for queue processing, and Redis Streams for real-time output.
  */
 
+import { createRequire } from 'node:module';
 import type { World } from '@workflow/world';
 import { Redis } from 'ioredis';
+
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json') as { version: string };
 import type { Redis as RedisClient } from 'ioredis';
 import { createQueue, type QueueConfig } from './queue.js';
 import { createStorage, type RedisStorageConfig } from './storage.js';
@@ -129,6 +133,9 @@ export function createWorld(config: RedisWorldConfig = {}): World {
   }
 
   return {
+    // World spec version for server routing
+    specVersion: version,
+
     // =========================================================================
     // RUNS STORAGE
     // =========================================================================
@@ -152,14 +159,6 @@ export function createWorld(config: RedisWorldConfig = {}): World {
       async cancel(id, params) {
         const { storage } = await ensureInitialized();
         return storage.runs.cancel(id, params);
-      },
-      async pause(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.pause(id, params);
-      },
-      async resume(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.resume(id, params);
       },
     },
 

@@ -351,16 +351,6 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
         const run = await this.update(id, { status: 'cancelled' });
         return filterRunData(run, params?.resolveData);
       },
-
-      async pause(id, params): Promise<WorkflowRun> {
-        const run = await this.update(id, { status: 'paused' });
-        return filterRunData(run, params?.resolveData);
-      },
-
-      async resume(id, params): Promise<WorkflowRun> {
-        const run = await this.update(id, { status: 'running' });
-        return filterRunData(run, params?.resolveData);
-      },
     },
 
     // =========================================================================

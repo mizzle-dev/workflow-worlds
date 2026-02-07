@@ -4,8 +4,12 @@
  * This is a complete MongoDB-backed World implementation.
  */
 
+import { createRequire } from 'node:module';
 import type { World } from '@workflow/world';
 import { MongoClient } from 'mongodb';
+
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json') as { version: string };
 import { createQueue, type QueueConfig } from './queue.js';
 import { createStorage, type MongoStorageConfig } from './storage.js';
 import { createStreamer, type StreamerConfig } from './streamer.js';
@@ -114,6 +118,9 @@ export function createWorld(config: MongoDBWorldConfig = {}): World {
   }
 
   return {
+    // World spec version for server routing
+    specVersion: version,
+
     // =========================================================================
     // RUNS STORAGE
     // =========================================================================
@@ -137,14 +144,6 @@ export function createWorld(config: MongoDBWorldConfig = {}): World {
       async cancel(id, params) {
         const { storage } = await ensureInitialized();
         return storage.runs.cancel(id, params);
-      },
-      async pause(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.pause(id, params);
-      },
-      async resume(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.resume(id, params);
       },
     },
 

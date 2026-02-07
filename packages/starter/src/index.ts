@@ -13,6 +13,7 @@
  * Each file has TODO markers showing where to swap in your implementation.
  */
 
+import { createRequire } from 'node:module';
 import type { World } from '@workflow/world';
 import { createQueue } from './queue.js';
 import type { QueueConfig } from './queue.js';
@@ -20,6 +21,9 @@ import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import type { StreamerConfig } from './streamer.js';
 import { debug } from './utils.js';
+
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json') as { version: string };
 
 /**
  * Configuration for the starter world.
@@ -54,6 +58,9 @@ export function createWorld(config: StarterWorldConfig = {}): World {
   debug('Initialization complete');
 
   return {
+    // World spec version for server routing
+    specVersion: version,
+
     // Spread all storage methods
     ...storage,
 

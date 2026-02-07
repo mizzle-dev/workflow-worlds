@@ -259,22 +259,6 @@ export function createStorage(): Storage {
         const run = await this.update(id, { status: 'cancelled' });
         return filterRunData(run, params?.resolveData);
       },
-
-      /**
-       * Pauses a workflow run.
-       */
-      async pause(id, params): Promise<WorkflowRun> {
-        const run = await this.update(id, { status: 'paused' });
-        return filterRunData(run, params?.resolveData);
-      },
-
-      /**
-       * Resumes a paused workflow run.
-       */
-      async resume(id, params): Promise<WorkflowRun> {
-        const run = await this.update(id, { status: 'running' });
-        return filterRunData(run, params?.resolveData);
-      },
     },
 
     // =========================================================================
