@@ -18,6 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let container: Awaited<ReturnType<typeof MongoDBContainer.prototype.start>> | null = null;
 let mongoClient: MongoClient | undefined;
+let startedLocalContainer = false;
 
 beforeAll(async () => {
   // Skip testcontainers if env var is already set (e.g., GitHub Actions services)
@@ -28,6 +29,7 @@ beforeAll(async () => {
 
   console.log('Starting MongoDB container...');
   container = await new MongoDBContainer('mongo:7').start();
+  startedLocalContainer = true;
 
   const connectionString = container.getConnectionString() + '?directConnection=true';
   console.log('MongoDB container started:', connectionString);
@@ -44,6 +46,12 @@ afterAll(async () => {
     console.log('Stopping MongoDB container...');
     await container.stop();
     console.log('MongoDB container stopped');
+    container = null;
+  }
+  // If this setup created the URI, clear it so the next test file starts its own container.
+  if (startedLocalContainer) {
+    delete process.env.WORKFLOW_MONGODB_URI;
+    startedLocalContainer = false;
   }
 });
 
