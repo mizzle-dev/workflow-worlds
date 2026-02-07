@@ -64,6 +64,14 @@ function rowToChunk(row: Row): StreamChunk {
  */
 export function createStreamer(config: StreamerConfig): Streamer {
   const { client } = config;
+  const tableInitPromise = client.execute(`
+    CREATE TABLE IF NOT EXISTS stream_runs (
+      run_id TEXT NOT NULL,
+      stream_name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (run_id, stream_name)
+    )
+  `);
 
   // Event emitter for real-time notifications
   // For multi-process, use external pub/sub (Redis, etc.)
@@ -75,6 +83,18 @@ export function createStreamer(config: StreamerConfig): Streamer {
   // Increase listener limit for high-concurrency scenarios
   emitter.setMaxListeners(100);
 
+  async function registerStream(
+    runId: string,
+    streamName: string
+  ): Promise<void> {
+    await tableInitPromise;
+    await client.execute({
+      sql: `INSERT OR IGNORE INTO stream_runs (run_id, stream_name, created_at)
+            VALUES (?, ?, ?)`,
+      args: [runId, streamName, new Date().toISOString()],
+    });
+  }
+
   return {
     /**
      * Writes a chunk of data to a named stream.
@@ -85,7 +105,8 @@ export function createStreamer(config: StreamerConfig): Streamer {
       chunk: string | Uint8Array
     ): Promise<void> {
       // Await runId if it's a promise (ensures proper ordering)
-      await runId;
+      const resolvedRunId = await runId;
+      await registerStream(resolvedRunId, name);
 
       const chunkId = `chnk_${generateUlid()}`;
       const nowStr = new Date().toISOString();
@@ -117,7 +138,8 @@ export function createStreamer(config: StreamerConfig): Streamer {
       name: string,
       runId: string | Promise<string>
     ): Promise<void> {
-      await runId;
+      const resolvedRunId = await runId;
+      await registerStream(resolvedRunId, name);
 
       const chunkId = `chnk_${generateUlid()}`;
       const nowStr = new Date().toISOString();
@@ -131,6 +153,17 @@ export function createStreamer(config: StreamerConfig): Streamer {
 
       // Notify subscribers that stream is closed
       emitter.emit(`close:${name}`);
+    },
+
+    async listStreamsByRunId(runId: string): Promise<string[]> {
+      await tableInitPromise;
+      const result = await client.execute({
+        sql: `SELECT stream_name FROM stream_runs
+              WHERE run_id = ?
+              ORDER BY stream_name ASC`,
+        args: [runId],
+      });
+      return result.rows.map((row) => row.stream_name as string);
     },
 
     /**
