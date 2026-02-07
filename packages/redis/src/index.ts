@@ -82,9 +82,9 @@ export function createWorld(config: RedisWorldConfig = {}): World {
 
   // Track initialization
   let initPromise: Promise<{
-    storage: Awaited<ReturnType<typeof createStorage>>['storage'];
-    queue: Awaited<ReturnType<typeof createQueue>>['queue'];
-    streamer: Awaited<ReturnType<typeof createStreamer>>['streamer'];
+    storage: any;
+    queue: any;
+    streamer: any;
     startQueue: () => Promise<void>;
     closeQueue: () => Promise<void>;
     closeStreamer: () => Promise<void>;
@@ -133,33 +133,13 @@ export function createWorld(config: RedisWorldConfig = {}): World {
     // RUNS STORAGE
     // =========================================================================
     runs: {
-      async create(data) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.create(data);
-      },
       async get(id, params) {
         const { storage } = await ensureInitialized();
         return storage.runs.get(id, params);
       },
-      async update(id, data) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.update(id, data);
-      },
       async list(params) {
         const { storage } = await ensureInitialized();
         return storage.runs.list(params);
-      },
-      async cancel(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.cancel(id, params);
-      },
-      async pause(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.pause(id, params);
-      },
-      async resume(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.resume(id, params);
       },
     },
 
@@ -167,17 +147,9 @@ export function createWorld(config: RedisWorldConfig = {}): World {
     // STEPS STORAGE
     // =========================================================================
     steps: {
-      async create(runId, data) {
-        const { storage } = await ensureInitialized();
-        return storage.steps.create(runId, data);
-      },
       async get(runId, stepId, params) {
         const { storage } = await ensureInitialized();
         return storage.steps.get(runId, stepId, params);
-      },
-      async update(runId, stepId, data) {
-        const { storage } = await ensureInitialized();
-        return storage.steps.update(runId, stepId, data);
       },
       async list(params) {
         const { storage } = await ensureInitialized();
@@ -191,6 +163,9 @@ export function createWorld(config: RedisWorldConfig = {}): World {
     events: {
       async create(runId, data, params) {
         const { storage } = await ensureInitialized();
+        if (runId === null) {
+          return storage.events.create(null, data, params);
+        }
         return storage.events.create(runId, data, params);
       },
       async list(params) {
@@ -207,10 +182,6 @@ export function createWorld(config: RedisWorldConfig = {}): World {
     // HOOKS STORAGE
     // =========================================================================
     hooks: {
-      async create(runId, data, params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.create(runId, data, params);
-      },
       async get(hookId, params) {
         const { storage } = await ensureInitialized();
         return storage.hooks.get(hookId, params);
@@ -222,10 +193,6 @@ export function createWorld(config: RedisWorldConfig = {}): World {
       async list(params) {
         const { storage } = await ensureInitialized();
         return storage.hooks.list(params);
-      },
-      async dispose(hookId, params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.dispose(hookId, params);
       },
     },
 
@@ -268,6 +235,11 @@ export function createWorld(config: RedisWorldConfig = {}): World {
     async readFromStream(name, startIndex) {
       const { streamer } = await ensureInitialized();
       return streamer.readFromStream(name, startIndex);
+    },
+
+    async listStreamsByRunId(runId) {
+      const { streamer } = await ensureInitialized();
+      return streamer.listStreamsByRunId(runId);
     },
 
     /**

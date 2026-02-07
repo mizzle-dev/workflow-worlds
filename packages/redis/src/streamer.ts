@@ -48,6 +48,7 @@ export async function createStreamer(options: {
     stream: (name: string) => `${prefix}:stream:${name}`,
     closed: (name: string) => `${prefix}:stream:${name}:closed`,
     channel: (name: string) => `${prefix}:stream:channel:${name}`,
+    runStreams: (runId: string) => `${prefix}:stream:runs:${runId}`,
   };
 
   const streamer: Streamer = {
@@ -60,7 +61,8 @@ export async function createStreamer(options: {
       chunk: string | Uint8Array
     ): Promise<void> {
       // Await runId if it's a promise (ensures proper ordering)
-      await runId;
+      const resolvedRunId = await runId;
+      await redis.sadd(keys.runStreams(resolvedRunId), name);
 
       const chunkId = `chnk_${generateUlid()}`;
 
@@ -101,7 +103,8 @@ export async function createStreamer(options: {
       name: string,
       runId: string | Promise<string>
     ): Promise<void> {
-      await runId;
+      const resolvedRunId = await runId;
+      await redis.sadd(keys.runStreams(resolvedRunId), name);
 
       const chunkId = `chnk_${generateUlid()}`;
 
@@ -125,6 +128,10 @@ export async function createStreamer(options: {
         keys.channel(name),
         JSON.stringify({ type: 'close', chunkId })
       );
+    },
+
+    async listStreamsByRunId(runId: string): Promise<string[]> {
+      return redis.smembers(keys.runStreams(runId));
     },
 
     /**

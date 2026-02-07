@@ -24,6 +24,12 @@ interface StreamChunk {
   createdAt: Date;
 }
 
+interface StreamRun {
+  runId: string;
+  streamName: string;
+  createdAt: Date;
+}
+
 /**
  * Configuration for the streamer.
  */
@@ -77,10 +83,15 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
     config.databaseName ?? process.env.WORKFLOW_MONGODB_DATABASE_NAME ?? 'workflow'
   );
   const chunksCollection = db.collection<StreamChunk>('stream_chunks');
+  const streamRunsCollection = db.collection<StreamRun>('stream_runs');
 
   // Create indexes
-  await chunksCollection.createIndex({ streamName: 1, chunkId: 1 });
-  await chunksCollection.createIndex({ chunkId: 1 }, { unique: true });
+  await Promise.all([
+    chunksCollection.createIndex({ streamName: 1, chunkId: 1 }),
+    chunksCollection.createIndex({ chunkId: 1 }, { unique: true }),
+    streamRunsCollection.createIndex({ runId: 1 }),
+    streamRunsCollection.createIndex({ runId: 1, streamName: 1 }, { unique: true }),
+  ]);
 
   // Event emitter for real-time notifications
   // In a single-process deployment, this works fine
@@ -129,6 +140,20 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
     }
   }
 
+  async function registerStream(runId: string, streamName: string): Promise<void> {
+    await streamRunsCollection.updateOne(
+      { runId, streamName },
+      {
+        $setOnInsert: {
+          runId,
+          streamName,
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+  }
+
   const streamer: Streamer = {
     /**
      * Writes a chunk of data to a named stream.
@@ -139,7 +164,8 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
       chunk: string | Uint8Array
     ): Promise<void> {
       // Await runId if it's a promise (ensures proper ordering)
-      await runId;
+      const resolvedRunId = await runId;
+      await registerStream(resolvedRunId, name);
 
       const chunkId = `chnk_${generateUlid()}`;
 
@@ -173,7 +199,8 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
       name: string,
       runId: string | Promise<string>
     ): Promise<void> {
-      await runId;
+      const resolvedRunId = await runId;
+      await registerStream(resolvedRunId, name);
 
       const chunkId = `chnk_${generateUlid()}`;
       const streamChunk: StreamChunk = {
@@ -189,6 +216,14 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
 
       // Notify subscribers that stream is closed
       emitter.emit(`close:${name}`);
+    },
+
+    async listStreamsByRunId(runId: string): Promise<string[]> {
+      const streamRuns = await streamRunsCollection
+        .find({ runId })
+        .sort({ streamName: 1 })
+        .toArray();
+      return streamRuns.map((streamRun) => streamRun.streamName);
     },
 
     /**

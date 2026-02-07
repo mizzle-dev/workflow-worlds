@@ -14,15 +14,21 @@ import type {
   Step,
   Event,
   Hook,
+  AnyEventRequest,
+  CreateEventParams,
   CreateWorkflowRunRequest,
-  UpdateWorkflowRunRequest,
   CreateStepRequest,
   UpdateStepRequest,
-  CreateEventRequest,
+  EventResult,
   CreateHookRequest,
   PaginatedResponse,
 } from '@workflow/world';
-import { WorkflowAPIError } from '@workflow/errors';
+import {
+  isLegacySpecVersion,
+  requiresNewerWorld,
+  SPEC_VERSION_CURRENT,
+} from '@workflow/world';
+import { RunNotSupportedError, WorkflowAPIError } from '@workflow/errors';
 import { monotonicFactory } from 'ulid';
 import type { Redis } from 'ioredis';
 import {
@@ -35,6 +41,59 @@ import {
 } from './utils.js';
 
 const generateUlid = monotonicFactory();
+
+type UpdateWorkflowRunRequest = {
+  status?: WorkflowRun['status'];
+  output?: unknown;
+  error?: WorkflowRun['error'];
+  executionContext?: Record<string, unknown>;
+};
+
+type ResolveDataParams = { resolveData?: 'none' | 'all' };
+
+type LegacyStorage = {
+  runs: {
+    create(
+      data: CreateWorkflowRunRequest & { specVersion?: number }
+    ): Promise<WorkflowRun>;
+    get(id: string, params?: ResolveDataParams): Promise<WorkflowRun>;
+    update(id: string, data: UpdateWorkflowRunRequest): Promise<WorkflowRun>;
+    list(params?: any): Promise<PaginatedResponse<WorkflowRun>>;
+  };
+  steps: {
+    create(
+      runId: string,
+      data: CreateStepRequest & { specVersion?: number }
+    ): Promise<Step>;
+    get(
+      runId: string | undefined,
+      stepId: string,
+      params?: ResolveDataParams
+    ): Promise<Step>;
+    update(runId: string, stepId: string, data: UpdateStepRequest): Promise<Step>;
+    list(params: any): Promise<PaginatedResponse<Step>>;
+  };
+  events: {
+    create(
+      runId: string,
+      data: AnyEventRequest,
+      params?: CreateEventParams
+    ): Promise<Event>;
+    list(params: any): Promise<PaginatedResponse<Event>>;
+    listByCorrelationId(params: any): Promise<PaginatedResponse<Event>>;
+  };
+  hooks: {
+    create(
+      runId: string,
+      data: CreateHookRequest & { specVersion?: number },
+      params?: ResolveDataParams
+    ): Promise<Hook>;
+    get(hookId: string, params?: ResolveDataParams): Promise<Hook>;
+    getByToken(token: string, params?: ResolveDataParams): Promise<Hook>;
+    list(params: any): Promise<PaginatedResponse<Hook>>;
+    dispose(hookId: string, params?: ResolveDataParams): Promise<Hook>;
+  };
+};
 
 /**
  * Configuration for Redis storage.
@@ -56,7 +115,7 @@ function filterRunData(
 ): WorkflowRun {
   const cloned = deepClone(run);
   if (resolveData === 'none') {
-    return { ...cloned, input: [], output: undefined };
+    return { ...cloned, input: undefined, output: undefined } as WorkflowRun;
   }
   return cloned;
 }
@@ -64,7 +123,7 @@ function filterRunData(
 function filterStepData(step: Step, resolveData: 'none' | 'all' = 'all'): Step {
   const cloned = deepClone(step);
   if (resolveData === 'none') {
-    return { ...cloned, input: [], output: undefined };
+    return { ...cloned, input: undefined, output: undefined } as Step;
   }
   return cloned;
 }
@@ -124,7 +183,7 @@ export async function createStorage(options: {
     hooksIdxRun: (runId: string) => `${prefix}:hooks:idx:run:${runId}`,
   };
 
-  const storage: Storage = {
+  const legacyStorage: LegacyStorage = {
     // =========================================================================
     // RUNS STORAGE
     // =========================================================================
@@ -139,6 +198,7 @@ export async function createStorage(options: {
           deploymentId: data.deploymentId,
           status: 'pending',
           workflowName: data.workflowName,
+          specVersion: (data as { specVersion?: number }).specVersion,
           input: (data.input ?? []) as unknown[],
           output: undefined,
           error: undefined,
@@ -341,20 +401,6 @@ export async function createStorage(options: {
         };
       },
 
-      async cancel(id, params): Promise<WorkflowRun> {
-        const run = await this.update(id, { status: 'cancelled' });
-        return filterRunData(run, params?.resolveData);
-      },
-
-      async pause(id, params): Promise<WorkflowRun> {
-        const run = await this.update(id, { status: 'paused' });
-        return filterRunData(run, params?.resolveData);
-      },
-
-      async resume(id, params): Promise<WorkflowRun> {
-        const run = await this.update(id, { status: 'running' });
-        return filterRunData(run, params?.resolveData);
-      },
     },
 
     // =========================================================================
@@ -378,6 +424,7 @@ export async function createStorage(options: {
           completedAt: undefined,
           createdAt: now,
           updatedAt: now,
+          specVersion: (data as { specVersion?: number }).specVersion,
         };
 
         const serialized = serializeForRedis(step as unknown as Record<string, unknown>);
@@ -490,7 +537,7 @@ export async function createStorage(options: {
     // EVENTS STORAGE
     // =========================================================================
     events: {
-      async create(runId, data: CreateEventRequest, params): Promise<Event> {
+      async create(runId, data: AnyEventRequest, params): Promise<Event> {
         const eventId = `wevt_${generateUlid()}`;
         const now = new Date();
         const score = ulidToScore(eventId);
@@ -671,6 +718,7 @@ export async function createStorage(options: {
           projectId: 'redis-project',
           environment: 'development',
           createdAt: now,
+          specVersion: (data as { specVersion?: number }).specVersion,
         };
 
         const serialized = serializeForRedis(hook as unknown as Record<string, unknown>);
@@ -774,6 +822,347 @@ export async function createStorage(options: {
         await pipeline.exec();
 
         return filterHookData(hook, params?.resolveData);
+      },
+    },
+  };
+
+  const appendEvent = legacyStorage.events.create.bind(
+    legacyStorage.events
+  ) as (
+    runId: string,
+    data: AnyEventRequest,
+    params?: CreateEventParams
+  ) => Promise<Event>;
+
+  async function handleLegacyEvent(
+    runId: string,
+    data: AnyEventRequest,
+    _currentRun: WorkflowRun,
+    params?: CreateEventParams
+  ): Promise<EventResult> {
+    const resolveData = params?.resolveData ?? 'all';
+
+    if (data.eventType === 'run_cancelled') {
+      const run = await legacyStorage.runs.update(runId, {
+        status: 'cancelled',
+        output: undefined,
+        error: undefined,
+      });
+      return { event: undefined, run: filterRunData(run, resolveData) };
+    }
+
+    if (data.eventType === 'wait_completed' || data.eventType === 'hook_received') {
+      const event = await appendEvent(
+        runId,
+        { ...data, specVersion: SPEC_VERSION_CURRENT } as AnyEventRequest,
+        params
+      );
+      return { event: filterEventData(event, resolveData) };
+    }
+
+    throw new WorkflowAPIError(
+      `Event '${data.eventType}' is not supported for legacy runs`,
+      { status: 409 }
+    );
+  }
+
+  const storage: Storage = {
+    runs: {
+      async get(id, params) {
+        return legacyStorage.runs.get(id, params) as any;
+      },
+      async list(params) {
+        return legacyStorage.runs.list(params) as any;
+      },
+    },
+
+    steps: {
+      async get(runId, stepId, params) {
+        return legacyStorage.steps.get(runId, stepId, params) as any;
+      },
+      async list(params) {
+        return legacyStorage.steps.list(params) as any;
+      },
+    },
+
+    events: {
+      async create(runId, data, params): Promise<EventResult> {
+        const resolveData = params?.resolveData ?? 'all';
+        const specVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
+
+        if (data.eventType === 'run_created') {
+          if (runId !== null) {
+            throw new WorkflowAPIError(
+              'runId must be null for run_created events',
+              { status: 400 }
+            );
+          }
+
+          const run = await legacyStorage.runs.create({
+            deploymentId: data.eventData.deploymentId,
+            workflowName: data.eventData.workflowName,
+            input: data.eventData.input,
+            executionContext: data.eventData.executionContext,
+            specVersion,
+          });
+          const event = await appendEvent(
+            run.runId,
+            { ...data, specVersion } as AnyEventRequest,
+            params
+          );
+
+          return {
+            event: filterEventData(event, resolveData),
+            run: filterRunData(run, resolveData),
+          };
+        }
+
+        if (!runId) {
+          throw new WorkflowAPIError('runId is required for this event type', {
+            status: 400,
+          });
+        }
+
+        const currentRun = await legacyStorage.runs.get(runId, {
+          resolveData: 'all',
+        });
+        if (requiresNewerWorld(currentRun.specVersion)) {
+          throw new RunNotSupportedError(
+            currentRun.specVersion!,
+            SPEC_VERSION_CURRENT
+          );
+        }
+        if (isLegacySpecVersion(currentRun.specVersion)) {
+          return handleLegacyEvent(runId, data, currentRun, params);
+        }
+
+        let run: WorkflowRun | undefined;
+        let step: Step | undefined;
+        let hook: Hook | undefined;
+
+        switch (data.eventType) {
+          case 'run_started':
+            run = await legacyStorage.runs.update(runId, { status: 'running' });
+            break;
+          case 'run_completed':
+            run = await legacyStorage.runs.update(runId, {
+              status: 'completed',
+              output: data.eventData.output,
+              error: undefined,
+            });
+            break;
+          case 'run_failed': {
+            const message =
+              typeof data.eventData.error === 'string'
+                ? data.eventData.error
+                : (data.eventData.error?.message ?? 'Unknown error');
+            run = await legacyStorage.runs.update(runId, {
+              status: 'failed',
+              output: undefined,
+              error: {
+                message,
+                stack: data.eventData.error?.stack,
+                code: data.eventData.errorCode,
+              },
+            });
+            break;
+          }
+          case 'run_cancelled':
+            run = await legacyStorage.runs.update(runId, {
+              status: 'cancelled',
+              output: undefined,
+              error: undefined,
+            });
+            break;
+          case 'step_created': {
+            const stepId = data.correlationId;
+            if (!stepId) {
+              throw new WorkflowAPIError(
+                'correlationId is required for step_created',
+                { status: 400 }
+              );
+            }
+            step = await legacyStorage.steps.create(runId, {
+              stepId,
+              stepName: data.eventData.stepName,
+              input: data.eventData.input,
+              specVersion,
+            });
+            break;
+          }
+          case 'step_started': {
+            const stepId = data.correlationId;
+            if (!stepId) {
+              throw new WorkflowAPIError(
+                'correlationId is required for step_started',
+                { status: 400 }
+              );
+            }
+            const existingStep = await legacyStorage.steps.get(runId, stepId, {
+              resolveData: 'all',
+            });
+            step = await legacyStorage.steps.update(runId, stepId, {
+              status: 'running',
+              attempt: data.eventData?.attempt ?? existingStep.attempt + 1,
+            });
+            break;
+          }
+          case 'step_completed': {
+            const stepId = data.correlationId;
+            if (!stepId) {
+              throw new WorkflowAPIError(
+                'correlationId is required for step_completed',
+                { status: 400 }
+              );
+            }
+            step = await legacyStorage.steps.update(runId, stepId, {
+              status: 'completed',
+              output: data.eventData.result,
+              error: undefined,
+            });
+            break;
+          }
+          case 'step_failed': {
+            const stepId = data.correlationId;
+            if (!stepId) {
+              throw new WorkflowAPIError(
+                'correlationId is required for step_failed',
+                { status: 400 }
+              );
+            }
+            const message =
+              typeof data.eventData.error === 'string'
+                ? data.eventData.error
+                : (data.eventData.error?.message ?? 'Unknown error');
+            step = await legacyStorage.steps.update(runId, stepId, {
+              status: 'failed',
+              output: undefined,
+              error: {
+                message,
+                stack: data.eventData.stack,
+              },
+            });
+            break;
+          }
+          case 'step_retrying': {
+            const stepId = data.correlationId;
+            if (!stepId) {
+              throw new WorkflowAPIError(
+                'correlationId is required for step_retrying',
+                { status: 400 }
+              );
+            }
+            const message =
+              typeof data.eventData.error === 'string'
+                ? data.eventData.error
+                : (data.eventData.error?.message ?? 'Unknown error');
+            step = await legacyStorage.steps.update(runId, stepId, {
+              status: 'pending',
+              error: {
+                message,
+                stack: data.eventData.stack,
+              },
+              retryAfter: data.eventData.retryAfter,
+            });
+            break;
+          }
+          case 'hook_created': {
+            const hookId = data.correlationId;
+            if (!hookId) {
+              throw new WorkflowAPIError(
+                'correlationId is required for hook_created',
+                { status: 400 }
+              );
+            }
+            try {
+              hook = await legacyStorage.hooks.create(
+                runId,
+                {
+                  hookId,
+                  token: data.eventData.token,
+                  metadata: data.eventData.metadata,
+                  specVersion,
+                },
+                params
+              );
+            } catch (error) {
+              if (
+                error instanceof WorkflowAPIError &&
+                (error as { status?: number }).status === 409
+              ) {
+                const conflictEvent = await appendEvent(
+                  runId,
+                  {
+                    eventType: 'hook_conflict',
+                    correlationId: hookId,
+                    eventData: { token: data.eventData.token },
+                    specVersion,
+                  } as unknown as AnyEventRequest,
+                  params
+                );
+                return { event: filterEventData(conflictEvent, resolveData) };
+              }
+              throw error;
+            }
+            break;
+          }
+          case 'hook_disposed': {
+            const hookId = data.correlationId;
+            if (!hookId) {
+              throw new WorkflowAPIError(
+                'correlationId is required for hook_disposed',
+                { status: 400 }
+              );
+            }
+            hook = await legacyStorage.hooks.dispose(hookId, params);
+            break;
+          }
+          case 'hook_received':
+          case 'wait_created':
+          case 'wait_completed':
+            break;
+          default: {
+            const exhaustiveCheck: never = data;
+            throw new WorkflowAPIError(
+              `Unsupported event type: ${(exhaustiveCheck as { eventType: string }).eventType}`,
+              { status: 400 }
+            );
+          }
+        }
+
+        const event = await appendEvent(
+          runId,
+          { ...data, specVersion } as AnyEventRequest,
+          params
+        );
+        return {
+          event: filterEventData(event, resolveData),
+          run: run ? filterRunData(run, resolveData) : undefined,
+          step: step ? filterStepData(step, resolveData) : undefined,
+          hook: hook ? filterHookData(hook, resolveData) : undefined,
+        };
+      },
+
+      async list(params) {
+        return legacyStorage.events.list(params) as any;
+      },
+
+      async listByCorrelationId(params) {
+        return legacyStorage.events.listByCorrelationId(params) as any;
+      },
+    },
+
+    hooks: {
+      async get(hookId, params) {
+        return legacyStorage.hooks.get(hookId, params) as any;
+      },
+
+      async getByToken(token, params) {
+        return legacyStorage.hooks.getByToken(token, params) as any;
+      },
+
+      async list(params) {
+        return legacyStorage.hooks.list(params) as any;
       },
     },
   };
