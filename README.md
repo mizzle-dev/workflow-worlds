@@ -47,6 +47,7 @@ A World provides the infrastructure layer for Workflow DevKit, handling:
 - [Patterns & Practices](./docs/04-patterns-and-practices.md) - Key patterns and gotchas
 - [Testing](./docs/05-testing.md) - Running the test suite
 - [Production Checklist](./docs/06-production-checklist.md) - Production readiness
+- [Release Guide](./docs/releases.md) - Stable and beta release workflows
 
 ## AI/LLM Resources
 

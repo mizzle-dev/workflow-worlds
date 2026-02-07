@@ -1,0 +1,85 @@
+name: Release Beta
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to release (branch, tag, or SHA)"
+        required: false
+        default: "main"
+      snapshot-tag:
+        description: "Snapshot suffix and npm dist-tag"
+        required: false
+        default: "beta"
+
+concurrency: beta-release-${{ github.event.inputs.ref || 'main' }}
+
+jobs:
+  beta-release:
+    name: Publish Beta
+    runs-on: ubuntu-latest
+    environment: publish
+    permissions:
+      contents: read
+      id-token: write
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand(\"ping\").ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      WORKFLOW_MONGODB_URI: "mongodb://localhost:27017/workflow-test"
+      WORKFLOW_REDIS_URI: "redis://localhost:6379"
+      WORKFLOW_TURSO_DATABASE_URL: "file:test.db"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || 'main' }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Prepare snapshot versions
+        run: pnpm changeset version --snapshot ${{ github.event.inputs.snapshot-tag || 'beta' }}
+
+      - name: Publish beta packages
+        run: pnpm changeset publish --tag ${{ github.event.inputs.snapshot-tag || 'beta' }}
+        env:
+          NPM_CONFIG_PROVENANCE: true
