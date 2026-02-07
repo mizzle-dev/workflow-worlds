@@ -7,7 +7,13 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import type { Storage } from '@workflow/world';
-import { WorkflowAPIError } from '@workflow/errors';
+import {
+  cancelRun,
+  completeRun,
+  createHook,
+  createRun,
+  failRun,
+} from './storage-compat.js';
 
 export interface HookTestOptions {
   /**
@@ -40,162 +46,144 @@ export function hookCleanupTests(options: HookTestOptions) {
     test('cleans up hooks when workflow completes', async () => {
       const token = `cleanup-test-${Date.now()}`;
 
-      // Create a workflow run
-      const run = await storage.runs.create({
+      const run = await createRun(storage, {
         deploymentId: 'test-deployment',
         workflowName: 'test-workflow',
         input: [],
       });
 
-      // Create a hook for this run
-      await storage.hooks.create(run.runId, {
+      const created = await createHook(storage, run.runId, {
         hookId: `whook_cleanup-${Date.now()}`,
         token,
         metadata: { test: 'data' },
       });
 
-      // Verify hook exists
+      expect(created.hook?.token).toBe(token);
+
       const hook = await storage.hooks.getByToken(token);
       expect(hook.token).toBe(token);
 
-      // Complete the workflow (this should clean up hooks)
-      await storage.runs.update(run.runId, {
-        status: 'completed',
-        output: { result: 'done' },
-      });
+      await completeRun(storage, run.runId, { result: 'done' });
 
-      // Hook should no longer exist
       await expect(storage.hooks.getByToken(token)).rejects.toThrow();
     });
 
     test('cleans up hooks when workflow fails', async () => {
       const token = `fail-cleanup-${Date.now()}`;
 
-      const run = await storage.runs.create({
+      const run = await createRun(storage, {
         deploymentId: 'test-deployment',
         workflowName: 'test-workflow',
         input: [],
       });
 
-      await storage.hooks.create(run.runId, {
+      await createHook(storage, run.runId, {
         hookId: `whook_fail-${Date.now()}`,
         token,
         metadata: {},
       });
 
-      // Fail the workflow
-      await storage.runs.update(run.runId, {
-        status: 'failed',
-        error: { message: 'Test error' },
-      });
+      await failRun(storage, run.runId, { message: 'Test error' });
 
-      // Hook should be cleaned up
       await expect(storage.hooks.getByToken(token)).rejects.toThrow();
     });
 
     test('cleans up hooks when workflow is cancelled', async () => {
       const token = `cancel-cleanup-${Date.now()}`;
 
-      const run = await storage.runs.create({
+      const run = await createRun(storage, {
         deploymentId: 'test-deployment',
         workflowName: 'test-workflow',
         input: [],
       });
 
-      await storage.hooks.create(run.runId, {
+      await createHook(storage, run.runId, {
         hookId: `whook_cancel-${Date.now()}`,
         token,
         metadata: {},
       });
 
-      // Cancel the workflow
-      await storage.runs.cancel(run.runId);
+      await cancelRun(storage, run.runId);
 
-      // Hook should be cleaned up
       await expect(storage.hooks.getByToken(token)).rejects.toThrow();
     });
 
     test('allows token reuse after workflow completes', async () => {
       const token = `reuse-test-${Date.now()}`;
 
-      // First workflow
-      const run1 = await storage.runs.create({
+      const run1 = await createRun(storage, {
         deploymentId: 'test-deployment',
         workflowName: 'test-workflow',
         input: [],
       });
 
-      await storage.hooks.create(run1.runId, {
+      await createHook(storage, run1.runId, {
         hookId: `whook_reuse1-${Date.now()}`,
         token,
         metadata: { workflow: 1 },
       });
 
-      // Complete first workflow
-      await storage.runs.update(run1.runId, {
-        status: 'completed',
-        output: {},
-      });
+      await completeRun(storage, run1.runId, {});
 
-      // Second workflow should be able to use the same token
-      const run2 = await storage.runs.create({
+      const run2 = await createRun(storage, {
         deploymentId: 'test-deployment',
         workflowName: 'test-workflow',
         input: [],
       });
 
-      // This should NOT throw - token should be available after cleanup
-      const hook2 = await storage.hooks.create(run2.runId, {
+      const hook2 = await createHook(storage, run2.runId, {
         hookId: `whook_reuse2-${Date.now()}`,
         token,
         metadata: { workflow: 2 },
       });
 
-      expect(hook2.token).toBe(token);
-      expect(hook2.runId).toBe(run2.runId);
+      expect(hook2.hook?.token).toBe(token);
+      expect(hook2.hook?.runId).toBe(run2.runId);
 
-      // Verify the hook is for the second run
       const retrieved = await storage.hooks.getByToken(token);
       expect(retrieved.runId).toBe(run2.runId);
 
-      // Clean up
-      await storage.runs.update(run2.runId, { status: 'completed', output: {} });
+      await completeRun(storage, run2.runId, {});
     });
 
-    test('token conflict throws 409 for active workflow', async () => {
+    test('token conflict returns conflict behavior for active workflow', async () => {
       const token = `conflict-test-${Date.now()}`;
 
-      // Create first workflow and hook
-      const run1 = await storage.runs.create({
+      const run1 = await createRun(storage, {
         deploymentId: 'test-deployment',
         workflowName: 'test-workflow',
         input: [],
       });
 
-      await storage.hooks.create(run1.runId, {
+      await createHook(storage, run1.runId, {
         hookId: `whook_conflict1-${Date.now()}`,
         token,
         metadata: {},
       });
 
-      // Try to create another hook with same token (workflow still active)
-      const run2 = await storage.runs.create({
+      const run2 = await createRun(storage, {
         deploymentId: 'test-deployment',
         workflowName: 'test-workflow',
         input: [],
       });
 
-      await expect(
-        storage.hooks.create(run2.runId, {
+      let sawConflict = false;
+      try {
+        const result = await createHook(storage, run2.runId, {
           hookId: `whook_conflict2-${Date.now()}`,
           token,
           metadata: {},
-        })
-      ).rejects.toThrow(/409|already exists/i);
+        });
+        sawConflict = result.event?.eventType === 'hook_conflict';
+      } catch (err) {
+        sawConflict = true;
+        expect(String(err)).toMatch(/409|already exists|conflict/i);
+      }
 
-      // Clean up
-      await storage.runs.update(run1.runId, { status: 'completed', output: {} });
-      await storage.runs.update(run2.runId, { status: 'completed', output: {} });
+      expect(sawConflict).toBe(true);
+
+      await completeRun(storage, run1.runId, {});
+      await completeRun(storage, run2.runId, {});
     });
 
     test('cleans up multiple hooks for same workflow', async () => {
@@ -205,34 +193,27 @@ export function hookCleanupTests(options: HookTestOptions) {
         `multi-3-${Date.now()}`,
       ];
 
-      const run = await storage.runs.create({
+      const run = await createRun(storage, {
         deploymentId: 'test-deployment',
         workflowName: 'test-workflow',
         input: [],
       });
 
-      // Create multiple hooks
       for (let i = 0; i < tokens.length; i++) {
-        await storage.hooks.create(run.runId, {
+        await createHook(storage, run.runId, {
           hookId: `whook_multi-${i}-${Date.now()}`,
           token: tokens[i],
           metadata: { index: i },
         });
       }
 
-      // Verify all hooks exist
       for (const token of tokens) {
         const hook = await storage.hooks.getByToken(token);
         expect(hook.runId).toBe(run.runId);
       }
 
-      // Complete workflow
-      await storage.runs.update(run.runId, {
-        status: 'completed',
-        output: {},
-      });
+      await completeRun(storage, run.runId, {});
 
-      // All hooks should be cleaned up
       for (const token of tokens) {
         await expect(storage.hooks.getByToken(token)).rejects.toThrow();
       }

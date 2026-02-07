@@ -29,15 +29,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@workflow/errors": "4.0.1-beta.6",
-    "@workflow/world": "4.0.1-beta.7",
+    "@workflow/errors": "4.1.0-beta.14",
+    "@workflow/world": "4.1.0-beta.2",
     "@vercel/queue": "^0.0.0-alpha.29",
     "ulid": "^2.3.0",
     "zod": "^4.1.11"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@workflow/world-testing": "4.0.1-beta.23",
+    "@workflow/world-testing": "4.1.0-beta.54",
     "@workflow-worlds/testing": "workspace:*",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

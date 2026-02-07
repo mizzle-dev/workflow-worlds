@@ -1,65 +1,100 @@
 /**
- * In-Memory Storage Implementation
+ * In-Memory Storage Implementation (Event-Sourced)
  *
- * This file implements the Storage interface using in-memory Maps.
- * Replace each Map with your actual database operations.
- *
- * TODO markers indicate where to swap in your real backend.
+ * This implementation follows the Workflow 4.1 storage contract where
+ * state mutations happen through events.create().
  */
 
-import type {
-  Storage,
-  WorkflowRun,
-  Step,
-  Event,
-  Hook,
-  CreateWorkflowRunRequest,
-  UpdateWorkflowRunRequest,
-  CreateStepRequest,
-  UpdateStepRequest,
-  CreateEventRequest,
-  CreateHookRequest,
-  PaginatedResponse,
+import {
+  RunNotSupportedError,
+  WorkflowAPIError,
+  WorkflowRunNotFoundError,
+} from '@workflow/errors';
+import {
+  type AnyEventRequest,
+  isLegacySpecVersion,
+  requiresNewerWorld,
+  SPEC_VERSION_CURRENT,
+  type CreateEventParams,
+  type GetHookParams,
+  type GetStepParams,
+  type GetWorkflowRunParams,
+  type ListEventsByCorrelationIdParams,
+  type ListEventsParams,
+  type ListHooksParams,
+  type ListWorkflowRunStepsParams,
+  type ListWorkflowRunsParams,
+  type Event,
+  type EventResult,
+  type Hook,
+  type RunCreatedEventRequest,
+  type Step,
+  type Storage,
+  type WorkflowRun,
 } from '@workflow/world';
-import { WorkflowAPIError } from '@workflow/errors';
 import { monotonicFactory } from 'ulid';
 
 // Monotonic ULID factory ensures IDs are always increasing
 const generateUlid = monotonicFactory();
 
 /**
- * Deep clone an object to prevent mutation of stored data.
- * Uses structuredClone which properly handles Date objects, Maps, Sets, etc.
+ * Deep clone an object to prevent accidental mutation of stored data.
  */
 function deepClone<T>(obj: T): T {
   return structuredClone(obj);
 }
 
 /**
- * Helper to filter data based on resolveData setting.
- * When resolveData is 'none', omit large payload fields to reduce bandwidth.
- *
- * IMPORTANT: These functions return deep clones to prevent callers from
- * mutating the in-memory stored data. The core may mutate returned objects
- * (e.g., hydrating hook.metadata), which would corrupt stored data.
+ * In-memory stores.
+ */
+interface Store {
+  runs: Map<string, WorkflowRun>;
+  steps: Map<string, Step>;
+  events: Map<string, Event>;
+  hooks: Map<string, Hook>;
+  hookIdsByToken: Map<string, string>;
+}
+
+function stepKey(runId: string, stepId: string): string {
+  return `${runId}:${stepId}`;
+}
+
+function isTerminalRunStatus(status: WorkflowRun['status']): boolean {
+  return (
+    status === 'completed' || status === 'failed' || status === 'cancelled'
+  );
+}
+
+function isTerminalStepStatus(status: Step['status']): boolean {
+  return status === 'completed' || status === 'failed';
+}
+
+/**
+ * Filter helpers for resolveData option.
  */
 function filterRunData(
   run: WorkflowRun,
   resolveData: 'none' | 'all' = 'all'
 ): WorkflowRun {
-  // Deep clone to prevent mutation of stored data
   const cloned = deepClone(run);
   if (resolveData === 'none') {
-    return { ...cloned, input: [], output: undefined };
+    return {
+      ...cloned,
+      input: undefined,
+      output: undefined,
+    } as WorkflowRun;
   }
   return cloned;
 }
 
 function filterStepData(step: Step, resolveData: 'none' | 'all' = 'all'): Step {
-  // Deep clone to prevent mutation of stored data
   const cloned = deepClone(step);
   if (resolveData === 'none') {
-    return { ...cloned, input: [], output: undefined };
+    return {
+      ...cloned,
+      input: undefined,
+      output: undefined,
+    } as Step;
   }
   return cloned;
 }
@@ -68,558 +103,710 @@ function filterEventData(
   event: Event,
   resolveData: 'none' | 'all' = 'all'
 ): Event {
-  // Deep clone to prevent mutation of stored data
   const cloned = deepClone(event);
-  if (resolveData === 'none') {
-    // Filter out eventData when not resolving data
-    if ('eventData' in cloned) {
-      delete (cloned as Record<string, unknown>).eventData;
-    }
+  if (resolveData === 'none' && 'eventData' in cloned) {
+    delete (cloned as Record<string, unknown>).eventData;
   }
   return cloned;
 }
 
 function filterHookData(hook: Hook, resolveData: 'none' | 'all' = 'all'): Hook {
-  // Deep clone to prevent mutation of stored data
   const cloned = deepClone(hook);
   if (resolveData === 'none') {
-    // Filter out metadata when not resolving data
     delete (cloned as Record<string, unknown>).metadata;
   }
   return cloned;
 }
 
-/**
- * Creates the Storage implementation.
- *
- * TODO: Replace the in-memory Maps with your database client.
- */
-export function createStorage(): Storage {
-  // TODO: Replace these Maps with your database connection
-  const runs = new Map<string, WorkflowRun>();
-  const steps = new Map<string, Step>();
-  const events = new Map<string, Event>();
-  const hooks = new Map<string, Hook>();
+function paginate<T>(
+  items: T[],
+  getId: (item: T) => string,
+  opts: {
+    sortOrder?: 'asc' | 'desc';
+    limit?: number;
+    cursor?: string;
+  },
+  defaultSortOrder: 'asc' | 'desc',
+  defaultLimit: number
+): { data: T[]; cursor: string | null; hasMore: boolean } {
+  const sortOrder = opts.sortOrder ?? defaultSortOrder;
+  const limit = opts.limit ?? defaultLimit;
+  const cursor = opts.cursor;
+
+  const sorted = [...items].sort((a, b) => {
+    const cmp = getId(a).localeCompare(getId(b));
+    return sortOrder === 'asc' ? cmp : -cmp;
+  });
+
+  let windowed = sorted;
+  if (cursor) {
+    const idx = sorted.findIndex((item) => getId(item) === cursor);
+    if (idx !== -1) {
+      windowed = sorted.slice(idx + 1);
+    }
+  }
+
+  const hasMore = windowed.length > limit;
+  const data = windowed.slice(0, limit);
+  const nextCursor = hasMore && data.length > 0 ? getId(data[data.length - 1]) : null;
 
   return {
-    // =========================================================================
-    // RUNS STORAGE
-    // =========================================================================
+    data,
+    cursor: nextCursor,
+    hasMore,
+  };
+}
+
+function cleanupHooksForRun(store: Store, runId: string): void {
+  for (const [hookId, hook] of store.hooks.entries()) {
+    if (hook.runId === runId) {
+      store.hooks.delete(hookId);
+      store.hookIdsByToken.delete(hook.token);
+    }
+  }
+}
+
+function readStep(store: Store, runId: string, stepId: string): Step | undefined {
+  return store.steps.get(stepKey(runId, stepId));
+}
+
+function writeStep(store: Store, step: Step): void {
+  store.steps.set(stepKey(step.runId, step.stepId), step);
+}
+
+function resolveDataOption(params?: CreateEventParams): 'none' | 'all' {
+  return params?.resolveData ?? 'all';
+}
+
+async function handleLegacyEvent(
+  store: Store,
+  runId: string,
+  data: AnyEventRequest,
+  currentRun: WorkflowRun,
+  params?: CreateEventParams
+): Promise<EventResult> {
+  const resolveData = resolveDataOption(params);
+
+  if (data.eventType === 'run_cancelled') {
+    const now = new Date();
+    const run: WorkflowRun = {
+      ...currentRun,
+      status: 'cancelled',
+      output: undefined,
+      error: undefined,
+      completedAt: now,
+      updatedAt: now,
+    };
+    store.runs.set(runId, run);
+    cleanupHooksForRun(store, runId);
+    return {
+      event: undefined,
+      run: filterRunData(run, resolveData),
+    };
+  }
+
+  if (data.eventType === 'wait_completed' || data.eventType === 'hook_received') {
+    const now = new Date();
+    const event: Event = {
+      ...data,
+      runId,
+      eventId: `wevt_${generateUlid()}`,
+      createdAt: now,
+      specVersion: SPEC_VERSION_CURRENT,
+    } as Event;
+    store.events.set(event.eventId, event);
+    return {
+      event: filterEventData(event, resolveData),
+    };
+  }
+
+  throw new WorkflowAPIError(
+    `Event '${data.eventType}' is not supported for legacy runs`,
+    { status: 409 }
+  );
+}
+
+/**
+ * Creates the Storage implementation.
+ */
+export function createStorage(): Storage {
+  const store: Store = {
+    runs: new Map(),
+    steps: new Map(),
+    events: new Map(),
+    hooks: new Map(),
+    hookIdsByToken: new Map(),
+  };
+
+  const storage = {
     runs: {
-      /**
-       * Creates a new workflow run.
-       *
-       * TODO: Insert into your database's runs table.
-       */
-      async create(data: CreateWorkflowRunRequest): Promise<WorkflowRun> {
-        const runId = `wrun_${generateUlid()}`;
-        const now = new Date();
-
-        const run: WorkflowRun = {
-          runId,
-          deploymentId: data.deploymentId,
-          status: 'pending',
-          workflowName: data.workflowName,
-          input: (data.input ?? []) as unknown[],
-          output: undefined,
-          error: undefined,
-          executionContext: data.executionContext as
-            | Record<string, unknown>
-            | undefined,
-          startedAt: undefined,
-          completedAt: undefined,
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        // TODO: INSERT INTO runs VALUES (...)
-        runs.set(runId, run);
-        // Return a clone to prevent caller mutations from affecting stored data
-        return deepClone(run);
-      },
-
-      /**
-       * Retrieves a workflow run by ID.
-       *
-       * TODO: SELECT * FROM runs WHERE run_id = ?
-       */
-      async get(id, params): Promise<WorkflowRun> {
-        // TODO: Query your database
-        const run = runs.get(id);
+      async get(id: string, params?: GetWorkflowRunParams) {
+        const run = store.runs.get(id);
         if (!run) {
-          throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
+          throw new WorkflowRunNotFoundError(id);
         }
         return filterRunData(run, params?.resolveData);
       },
 
-      /**
-       * Updates a workflow run.
-       *
-       * Key behaviors:
-       * - Set startedAt only once when status becomes 'running'
-       * - Set completedAt when status becomes terminal
-       * - Clean up hooks on terminal status
-       *
-       * TODO: UPDATE runs SET ... WHERE run_id = ?
-       */
-      async update(id, data: UpdateWorkflowRunRequest): Promise<WorkflowRun> {
-        const existing = runs.get(id);
-        if (!existing) {
-          throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
-        }
+      async list(params?: ListWorkflowRunsParams) {
+        const allRuns = Array.from(store.runs.values());
 
-        const now = new Date();
-        const updated: WorkflowRun = {
-          ...existing,
-          ...data,
-          updatedAt: now,
-        } as WorkflowRun;
-
-        // Only set startedAt the first time status becomes 'running'
-        if (data.status === 'running' && !updated.startedAt) {
-          updated.startedAt = now;
-        }
-
-        // Set completedAt on terminal states
-        const isTerminal =
-          data.status === 'completed' ||
-          data.status === 'failed' ||
-          data.status === 'cancelled';
-
-        if (isTerminal) {
-          updated.completedAt = now;
-
-          // Clean up all hooks for this run
-          // TODO: DELETE FROM hooks WHERE run_id = ?
-          for (const [hookId, hook] of hooks.entries()) {
-            if (hook.runId === id) {
-              hooks.delete(hookId);
-            }
+        const filtered = allRuns.filter((run) => {
+          if (params?.workflowName && run.workflowName !== params.workflowName) {
+            return false;
           }
-        }
-
-        // TODO: Update in your database
-        runs.set(id, updated);
-        // Return a clone to prevent caller mutations from affecting stored data
-        return deepClone(updated);
-      },
-
-      /**
-       * Lists workflow runs with optional filtering and pagination.
-       *
-       * TODO: SELECT * FROM runs WHERE ... ORDER BY run_id DESC LIMIT ?
-       */
-      async list(params): Promise<PaginatedResponse<WorkflowRun>> {
-        let results = Array.from(runs.values());
-
-        // Apply filters
-        if (params?.workflowName) {
-          results = results.filter(
-            (r) => r.workflowName === params.workflowName
-          );
-        }
-        if (params?.status) {
-          results = results.filter((r) => r.status === params.status);
-        }
-
-        // Sort by ULID (chronological) - default descending (newest first)
-        const sortOrder = params?.pagination?.sortOrder ?? 'desc';
-        results.sort((a, b) => {
-          const cmp = a.runId.localeCompare(b.runId);
-          return sortOrder === 'desc' ? -cmp : cmp;
+          if (params?.status && run.status !== params.status) {
+            return false;
+          }
+          return true;
         });
 
-        // Apply cursor-based pagination
-        const limit = params?.pagination?.limit ?? 100;
-        const cursor = params?.pagination?.cursor;
-
-        if (cursor) {
-          const cursorIndex = results.findIndex((r) => r.runId === cursor);
-          if (cursorIndex !== -1) {
-            results = results.slice(cursorIndex + 1);
-          }
-        }
-
-        // Determine if there are more results
-        const hasMore = results.length > limit;
-        const data = results.slice(0, limit);
-        const nextCursor = hasMore ? data[data.length - 1]?.runId : null;
+        const page = paginate(
+          filtered,
+          (run) => run.runId,
+          {
+            sortOrder: params?.pagination?.sortOrder,
+            limit: params?.pagination?.limit,
+            cursor: params?.pagination?.cursor,
+          },
+          'desc',
+          100
+        );
 
         return {
-          data: data.map((r) => filterRunData(r, params?.resolveData)),
-          cursor: nextCursor,
-          hasMore,
+          data: page.data.map((run) => filterRunData(run, params?.resolveData)),
+          cursor: page.cursor,
+          hasMore: page.hasMore,
         };
-      },
-
-      /**
-       * Cancels a workflow run.
-       */
-      async cancel(id, params): Promise<WorkflowRun> {
-        const run = await this.update(id, { status: 'cancelled' });
-        return filterRunData(run, params?.resolveData);
-      },
-
-      /**
-       * Pauses a workflow run.
-       */
-      async pause(id, params): Promise<WorkflowRun> {
-        const run = await this.update(id, { status: 'paused' });
-        return filterRunData(run, params?.resolveData);
-      },
-
-      /**
-       * Resumes a paused workflow run.
-       */
-      async resume(id, params): Promise<WorkflowRun> {
-        const run = await this.update(id, { status: 'running' });
-        return filterRunData(run, params?.resolveData);
       },
     },
 
-    // =========================================================================
-    // STEPS STORAGE
-    // =========================================================================
     steps: {
-      /**
-       * Creates a new step execution record.
-       *
-       * TODO: INSERT INTO steps VALUES (...)
-       */
-      async create(runId, data: CreateStepRequest): Promise<Step> {
-        const now = new Date();
+      async get(runId: string | undefined, stepId: string, params?: GetStepParams) {
+        let found: Step | undefined;
 
-        const step: Step = {
-          runId,
-          stepId: data.stepId,
-          stepName: data.stepName,
-          status: 'pending',
-          input: data.input as unknown[],
-          output: undefined,
-          error: undefined,
-          attempt: 0,
-          startedAt: undefined,
-          completedAt: undefined,
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        // Use composite key for storage
-        const key = `${runId}-${data.stepId}`;
-        // TODO: Insert into your database
-        steps.set(key, step);
-        // Return a clone to prevent caller mutations from affecting stored data
-        return deepClone(step);
-      },
-
-      /**
-       * Retrieves a step by ID.
-       *
-       * Note: runId can be undefined - in that case, search all steps.
-       *
-       * TODO: SELECT * FROM steps WHERE step_id = ? (AND run_id = ?)
-       */
-      async get(runId, stepId, params): Promise<Step> {
-        if (!runId) {
-          // Search all steps for this stepId
-          for (const step of steps.values()) {
+        if (runId) {
+          found = readStep(store, runId, stepId);
+        } else {
+          for (const step of store.steps.values()) {
             if (step.stepId === stepId) {
-              return filterStepData(step, params?.resolveData);
+              found = step;
+              break;
             }
           }
+        }
+
+        if (!found) {
           throw new WorkflowAPIError(`Step not found: ${stepId}`, { status: 404 });
         }
 
-        const key = `${runId}-${stepId}`;
-        const step = steps.get(key);
-        if (!step) {
-          throw new WorkflowAPIError(`Step not found: ${stepId}`, { status: 404 });
-        }
-        return filterStepData(step, params?.resolveData);
+        return filterStepData(found, params?.resolveData);
       },
 
-      /**
-       * Updates a step execution.
-       *
-       * TODO: UPDATE steps SET ... WHERE run_id = ? AND step_id = ?
-       */
-      async update(runId, stepId, data: UpdateStepRequest): Promise<Step> {
-        const key = `${runId}-${stepId}`;
-        const existing = steps.get(key);
-        if (!existing) {
-          throw new WorkflowAPIError(`Step not found: ${stepId}`, { status: 404 });
-        }
-
-        const now = new Date();
-        const updated: Step = {
-          ...existing,
-          ...data,
-          updatedAt: now,
-        };
-
-        // Set startedAt only once when status becomes 'running'
-        if (data.status === 'running' && !updated.startedAt) {
-          updated.startedAt = now;
-        }
-
-        // Set completedAt on terminal states
-        if (data.status === 'completed' || data.status === 'failed') {
-          updated.completedAt = now;
-        }
-
-        // TODO: Update in your database
-        steps.set(key, updated);
-        // Return a clone to prevent caller mutations from affecting stored data
-        return deepClone(updated);
-      },
-
-      /**
-       * Lists steps for a workflow run.
-       *
-       * TODO: SELECT * FROM steps WHERE run_id = ? ORDER BY created_at
-       */
-      async list(params): Promise<PaginatedResponse<Step>> {
-        let results = Array.from(steps.values()).filter(
-          (s) => s.runId === params.runId
+      async list(params: ListWorkflowRunStepsParams) {
+        const stepsForRun = Array.from(store.steps.values()).filter(
+          (step) => step.runId === params.runId
         );
 
-        // Sort by creation time
-        const sortOrder = params.pagination?.sortOrder ?? 'desc';
-        results.sort((a, b) => {
-          const cmp = a.createdAt.getTime() - b.createdAt.getTime();
-          return sortOrder === 'desc' ? -cmp : cmp;
-        });
-
-        const limit = params.pagination?.limit ?? 100;
-        const hasMore = results.length > limit;
-        const data = results.slice(0, limit);
-        const nextCursor = hasMore ? data[data.length - 1]?.stepId : null;
+        const page = paginate(
+          stepsForRun,
+          (step) => step.stepId,
+          {
+            sortOrder: params.pagination?.sortOrder,
+            limit: params.pagination?.limit,
+            cursor: params.pagination?.cursor,
+          },
+          'desc',
+          100
+        );
 
         return {
-          data: data.map((s) => filterStepData(s, params.resolveData)),
-          cursor: nextCursor,
-          hasMore,
+          data: page.data.map((step) => filterStepData(step, params.resolveData)),
+          cursor: page.cursor,
+          hasMore: page.hasMore,
         };
       },
     },
 
-    // =========================================================================
-    // EVENTS STORAGE
-    // =========================================================================
     events: {
-      /**
-       * Creates a new event in the log.
-       *
-       * Events are the source of truth for workflow replay.
-       *
-       * TODO: INSERT INTO events VALUES (...)
-       */
-      async create(runId, data: CreateEventRequest, params): Promise<Event> {
-        const eventId = `wevt_${generateUlid()}`;
+      async create(
+        runId: string | null,
+        data: AnyEventRequest,
+        params?: CreateEventParams
+      ) {
+        const resolveData = resolveDataOption(params);
         const now = new Date();
+        const eventId = `wevt_${generateUlid()}`;
+        const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
 
-        const event: Event = {
-          ...data,
-          runId,
-          eventId,
-          createdAt: now,
-        };
+        let effectiveRunId: string;
+        if (data.eventType === 'run_created') {
+          effectiveRunId = runId ?? `wrun_${generateUlid()}`;
+        } else {
+          if (!runId) {
+            throw new WorkflowAPIError('runId is required for non run_created events', {
+              status: 400,
+            });
+          }
+          effectiveRunId = runId;
+        }
 
-        // TODO: Insert into your database
-        events.set(eventId, event);
-        return filterEventData(event, params?.resolveData);
-      },
+        const currentRun = store.runs.get(effectiveRunId);
 
-      /**
-       * Lists events for a workflow run.
-       *
-       * Important: Default sort order is 'asc' (oldest first) for proper replay.
-       *
-       * TODO: SELECT * FROM events WHERE run_id = ? ORDER BY event_id ASC
-       */
-      async list(params): Promise<PaginatedResponse<Event>> {
-        let results = Array.from(events.values()).filter(
-          (e) => e.runId === params.runId
-        );
+        if (currentRun) {
+          if (requiresNewerWorld(currentRun.specVersion)) {
+            throw new RunNotSupportedError(
+              currentRun.specVersion as number,
+              SPEC_VERSION_CURRENT
+            );
+          }
 
-        // Events default to ascending order (oldest first) for replay
-        const sortOrder = params.pagination?.sortOrder ?? 'asc';
-        results.sort((a, b) => {
-          const cmp = a.eventId.localeCompare(b.eventId);
-          return sortOrder === 'asc' ? cmp : -cmp;
-        });
+          if (isLegacySpecVersion(currentRun.specVersion)) {
+            return handleLegacyEvent(store, effectiveRunId, data, currentRun, params);
+          }
 
-        // High default limit to ensure all events are returned for replay
-        // The idempotency test creates 220+ events (110 steps × 2)
-        const limit = params.pagination?.limit ?? 10000;
-        const cursor = params.pagination?.cursor;
+          if (isTerminalRunStatus(currentRun.status)) {
+            const runTerminalEvents = new Set([
+              'run_started',
+              'run_completed',
+              'run_failed',
+              'run_cancelled',
+            ]);
 
-        if (cursor) {
-          const cursorIndex = results.findIndex((e) => e.eventId === cursor);
-          if (cursorIndex !== -1) {
-            results = results.slice(cursorIndex + 1);
+            if (
+              data.eventType === 'run_cancelled' &&
+              currentRun.status === 'cancelled'
+            ) {
+              const event: Event = {
+                ...data,
+                runId: effectiveRunId,
+                eventId,
+                createdAt: now,
+                specVersion: effectiveSpecVersion,
+              } as Event;
+              store.events.set(eventId, event);
+              return {
+                event: filterEventData(event, resolveData),
+                run: deepClone(currentRun),
+              };
+            }
+
+            if (runTerminalEvents.has(data.eventType)) {
+              throw new WorkflowAPIError(
+                `Cannot transition run from terminal state '${currentRun.status}'`,
+                { status: 409 }
+              );
+            }
+
+            if (data.eventType === 'step_created' || data.eventType === 'hook_created') {
+              throw new WorkflowAPIError(
+                `Cannot create entities on terminal run '${currentRun.status}'`,
+                { status: 409 }
+              );
+            }
           }
         }
 
-        const hasMore = results.length > limit;
-        const data = results.slice(0, limit);
-        const nextCursor = hasMore ? data[data.length - 1]?.eventId : null;
+        let validatedStep: Step | undefined;
+        const stepLifecycleEvents = new Set([
+          'step_started',
+          'step_completed',
+          'step_failed',
+          'step_retrying',
+        ]);
 
-        return {
-          data: data.map((e) => filterEventData(e, params.resolveData)),
-          cursor: nextCursor,
-          hasMore,
-        };
-      },
+        if (stepLifecycleEvents.has(data.eventType)) {
+          if (!data.correlationId) {
+            throw new WorkflowAPIError('Step events require correlationId', {
+              status: 400,
+            });
+          }
 
-      /**
-       * Lists events by correlation ID.
-       *
-       * Correlation IDs link related events (e.g., step_started → step_completed).
-       *
-       * TODO: SELECT * FROM events WHERE correlation_id = ? ORDER BY event_id ASC
-       */
-      async listByCorrelationId(params): Promise<PaginatedResponse<Event>> {
-        let results = Array.from(events.values()).filter(
-          (e) => e.correlationId === params.correlationId
-        );
+          validatedStep = readStep(store, effectiveRunId, data.correlationId);
+          if (!validatedStep) {
+            throw new WorkflowAPIError(`Step '${data.correlationId}' not found`, {
+              status: 404,
+            });
+          }
 
-        const sortOrder = params.pagination?.sortOrder ?? 'asc';
-        results.sort((a, b) => {
-          const cmp = a.eventId.localeCompare(b.eventId);
-          return sortOrder === 'asc' ? cmp : -cmp;
-        });
-
-        const limit = params.pagination?.limit ?? 100;
-        const hasMore = results.length > limit;
-        const data = results.slice(0, limit);
-        const nextCursor = hasMore ? data[data.length - 1]?.eventId : null;
-
-        return {
-          data: data.map((e) => filterEventData(e, params.resolveData)),
-          cursor: nextCursor,
-          hasMore,
-        };
-      },
-    },
-
-    // =========================================================================
-    // HOOKS STORAGE
-    // =========================================================================
-    hooks: {
-      /**
-       * Creates a new hook registration.
-       *
-       * Hooks allow workflows to wait for external events.
-       *
-       * TODO: INSERT INTO hooks VALUES (...)
-       */
-      async create(runId, data: CreateHookRequest, params): Promise<Hook> {
-        // Check for token uniqueness
-        for (const hook of hooks.values()) {
-          if (hook.token === data.token) {
+          if (isTerminalStepStatus(validatedStep.status)) {
             throw new WorkflowAPIError(
-              `Hook with token ${data.token} already exists`,
+              `Cannot modify step in terminal state '${validatedStep.status}'`,
               { status: 409 }
+            );
+          }
+
+          if (currentRun && isTerminalRunStatus(currentRun.status) && validatedStep.status !== 'running') {
+            throw new WorkflowAPIError(
+              `Cannot modify non-running step on terminal run '${currentRun.status}'`,
+              { status: 410 }
             );
           }
         }
 
-        const now = new Date();
-        const hook: Hook = {
-          runId,
-          hookId: data.hookId,
-          token: data.token,
-          metadata: data.metadata,
-          // These fields are for multi-tenant deployments.
-          // For single-tenant setups, use placeholder values.
-          ownerId: 'starter-owner',
-          projectId: 'starter-project',
-          environment: 'development',
-          createdAt: now,
-        };
-
-        // TODO: Insert into your database
-        hooks.set(data.hookId, hook);
-        return filterHookData(hook, params?.resolveData);
-      },
-
-      /**
-       * Retrieves a hook by ID.
-       *
-       * TODO: SELECT * FROM hooks WHERE hook_id = ?
-       */
-      async get(hookId, params): Promise<Hook> {
-        const hook = hooks.get(hookId);
-        if (!hook) {
-          throw new WorkflowAPIError(`Hook not found: ${hookId}`, {
-            status: 404,
-          });
-        }
-        return filterHookData(hook, params?.resolveData);
-      },
-
-      /**
-       * Retrieves a hook by its security token.
-       *
-       * Used when an external caller resumes a hook.
-       *
-       * TODO: SELECT * FROM hooks WHERE token = ?
-       */
-      async getByToken(token, params): Promise<Hook> {
-        for (const hook of hooks.values()) {
-          if (hook.token === token) {
-            return filterHookData(hook, params?.resolveData);
+        if ((data.eventType === 'hook_received' || data.eventType === 'hook_disposed') && data.correlationId) {
+          const existingHook = store.hooks.get(data.correlationId);
+          if (!existingHook) {
+            throw new WorkflowAPIError(`Hook '${data.correlationId}' not found`, {
+              status: 404,
+            });
           }
         }
-        throw new WorkflowAPIError(`Hook not found for token: ${token}`, {
-          status: 404,
-        });
-      },
 
-      /**
-       * Lists hooks, optionally filtered by run ID.
-       *
-       * TODO: SELECT * FROM hooks WHERE run_id = ?
-       */
-      async list(params): Promise<PaginatedResponse<Hook>> {
-        let results = Array.from(hooks.values());
+        const baseEvent: Event = {
+          ...data,
+          runId: effectiveRunId,
+          eventId,
+          createdAt: now,
+          specVersion: effectiveSpecVersion,
+        } as Event;
 
-        if (params.runId) {
-          results = results.filter((h) => h.runId === params.runId);
+        let run: WorkflowRun | undefined;
+        let step: Step | undefined;
+        let hook: Hook | undefined;
+
+        if (data.eventType === 'run_created') {
+          const runData = (data as RunCreatedEventRequest).eventData;
+          run = {
+            runId: effectiveRunId,
+            deploymentId: runData.deploymentId,
+            workflowName: runData.workflowName,
+            status: 'pending',
+            specVersion: effectiveSpecVersion,
+            executionContext: runData.executionContext,
+            input: runData.input,
+            output: undefined,
+            error: undefined,
+            startedAt: undefined,
+            completedAt: undefined,
+            createdAt: now,
+            updatedAt: now,
+          };
+          store.runs.set(run.runId, run);
+        } else if (data.eventType === 'run_started') {
+          if (!currentRun) {
+            throw new WorkflowAPIError(`Run not found: ${effectiveRunId}`, { status: 404 });
+          }
+          run = {
+            ...currentRun,
+            status: 'running',
+            startedAt: currentRun.startedAt ?? now,
+            output: undefined,
+            error: undefined,
+            completedAt: undefined,
+            updatedAt: now,
+          };
+          store.runs.set(run.runId, run);
+        } else if (data.eventType === 'run_completed') {
+          if (!currentRun) {
+            throw new WorkflowAPIError(`Run not found: ${effectiveRunId}`, { status: 404 });
+          }
+          run = {
+            ...currentRun,
+            status: 'completed',
+            output: data.eventData?.output,
+            error: undefined,
+            completedAt: now,
+            updatedAt: now,
+          };
+          store.runs.set(run.runId, run);
+          cleanupHooksForRun(store, run.runId);
+        } else if (data.eventType === 'run_failed') {
+          if (!currentRun) {
+            throw new WorkflowAPIError(`Run not found: ${effectiveRunId}`, { status: 404 });
+          }
+          run = {
+            ...currentRun,
+            status: 'failed',
+            output: undefined,
+            error: {
+              message:
+                typeof data.eventData.error === 'string'
+                  ? data.eventData.error
+                  : (data.eventData.error?.message ?? 'Unknown error'),
+              stack:
+                data.eventData.error?.stack,
+              code: data.eventData.errorCode,
+            },
+            completedAt: now,
+            updatedAt: now,
+          };
+          store.runs.set(run.runId, run);
+          cleanupHooksForRun(store, run.runId);
+        } else if (data.eventType === 'run_cancelled') {
+          if (!currentRun) {
+            throw new WorkflowAPIError(`Run not found: ${effectiveRunId}`, { status: 404 });
+          }
+          run = {
+            ...currentRun,
+            status: 'cancelled',
+            output: undefined,
+            error: undefined,
+            completedAt: now,
+            updatedAt: now,
+          };
+          store.runs.set(run.runId, run);
+          cleanupHooksForRun(store, run.runId);
+        } else if (data.eventType === 'step_created') {
+          step = {
+            runId: effectiveRunId,
+            stepId: data.correlationId,
+            stepName: data.eventData.stepName,
+            status: 'pending',
+            input: data.eventData.input,
+            output: undefined,
+            error: undefined,
+            attempt: 0,
+            startedAt: undefined,
+            completedAt: undefined,
+            createdAt: now,
+            updatedAt: now,
+            retryAfter: undefined,
+            specVersion: effectiveSpecVersion,
+          };
+          writeStep(store, step);
+        } else if (data.eventType === 'step_started') {
+          if (!validatedStep || !data.correlationId) {
+            throw new WorkflowAPIError('Step not found for step_started', { status: 404 });
+          }
+
+          if (
+            validatedStep.retryAfter &&
+            validatedStep.retryAfter.getTime() > Date.now()
+          ) {
+            const err = new WorkflowAPIError(
+              `Cannot start step '${data.correlationId}' before retryAfter`,
+              { status: 425 }
+            );
+            (err as WorkflowAPIError & { meta?: Record<string, string> }).meta = {
+              stepId: data.correlationId,
+              retryAfter: validatedStep.retryAfter.toISOString(),
+            };
+            throw err;
+          }
+
+          step = {
+            ...validatedStep,
+            status: 'running',
+            startedAt: validatedStep.startedAt ?? now,
+            attempt: validatedStep.attempt + 1,
+            retryAfter: undefined,
+            updatedAt: now,
+          };
+          writeStep(store, step);
+        } else if (data.eventType === 'step_completed') {
+          if (!validatedStep) {
+            throw new WorkflowAPIError('Step not found for step_completed', { status: 404 });
+          }
+
+          step = {
+            ...validatedStep,
+            status: 'completed',
+            output: data.eventData.result,
+            completedAt: now,
+            updatedAt: now,
+          };
+          writeStep(store, step);
+        } else if (data.eventType === 'step_failed') {
+          if (!validatedStep) {
+            throw new WorkflowAPIError('Step not found for step_failed', { status: 404 });
+          }
+
+          step = {
+            ...validatedStep,
+            status: 'failed',
+            error: {
+              message:
+                typeof data.eventData.error === 'string'
+                  ? data.eventData.error
+                  : (data.eventData.error?.message ?? 'Unknown error'),
+              stack: data.eventData.stack,
+            },
+            completedAt: now,
+            updatedAt: now,
+          };
+          writeStep(store, step);
+        } else if (data.eventType === 'step_retrying') {
+          if (!validatedStep) {
+            throw new WorkflowAPIError('Step not found for step_retrying', { status: 404 });
+          }
+
+          step = {
+            ...validatedStep,
+            status: 'pending',
+            error: {
+              message:
+                typeof data.eventData.error === 'string'
+                  ? data.eventData.error
+                  : (data.eventData.error?.message ?? 'Unknown error'),
+              stack: data.eventData.stack,
+            },
+            retryAfter: data.eventData.retryAfter,
+            updatedAt: now,
+          };
+          writeStep(store, step);
+        } else if (data.eventType === 'hook_created') {
+          const existingHookId = store.hookIdsByToken.get(data.eventData.token);
+          if (existingHookId) {
+            const conflictEvent: Event = {
+              eventType: 'hook_conflict',
+              correlationId: data.correlationId,
+              eventData: {
+                token: data.eventData.token,
+              },
+              runId: effectiveRunId,
+              eventId,
+              createdAt: now,
+              specVersion: effectiveSpecVersion,
+            } as Event;
+            store.events.set(conflictEvent.eventId, conflictEvent);
+            return {
+              event: filterEventData(conflictEvent, resolveData),
+              run,
+              step,
+              hook: undefined,
+            };
+          }
+
+          hook = {
+            runId: effectiveRunId,
+            hookId: data.correlationId,
+            token: data.eventData.token,
+            metadata: data.eventData.metadata,
+            ownerId: 'starter-owner',
+            projectId: 'starter-project',
+            environment: 'development',
+            createdAt: now,
+            specVersion: effectiveSpecVersion,
+          };
+          store.hooks.set(hook.hookId, hook);
+          store.hookIdsByToken.set(hook.token, hook.hookId);
+        } else if (data.eventType === 'hook_disposed') {
+          if (data.correlationId) {
+            const existingHook = store.hooks.get(data.correlationId);
+            if (existingHook) {
+              store.hooks.delete(existingHook.hookId);
+              store.hookIdsByToken.delete(existingHook.token);
+            }
+          }
         }
 
-        const limit = params.pagination?.limit ?? 100;
-        const hasMore = results.length > limit;
-        const data = results.slice(0, limit);
-        const nextCursor = hasMore ? data[data.length - 1]?.hookId : null;
+        store.events.set(baseEvent.eventId, baseEvent);
 
         return {
-          data: data.map((h) => filterHookData(h, params.resolveData)),
-          cursor: nextCursor,
-          hasMore,
+          event: filterEventData(baseEvent, resolveData),
+          run: run ? deepClone(run) : undefined,
+          step: step ? deepClone(step) : undefined,
+          hook: hook ? deepClone(hook) : undefined,
         };
       },
 
-      /**
-       * Deletes a hook.
-       *
-       * Called when a hook is received or when a run completes.
-       *
-       * TODO: DELETE FROM hooks WHERE hook_id = ?
-       */
-      async dispose(hookId, params): Promise<Hook> {
-        const hook = hooks.get(hookId);
+      async list(params: ListEventsParams) {
+        const forRun = Array.from(store.events.values()).filter(
+          (event) => event.runId === params.runId
+        );
+
+        const page = paginate(
+          forRun,
+          (event) => event.eventId,
+          {
+            sortOrder: params.pagination?.sortOrder,
+            limit: params.pagination?.limit,
+            cursor: params.pagination?.cursor,
+          },
+          'asc',
+          10000
+        );
+
+        return {
+          data: page.data.map((event) => filterEventData(event, params.resolveData)),
+          cursor: page.cursor,
+          hasMore: page.hasMore,
+        };
+      },
+
+      async listByCorrelationId(params: ListEventsByCorrelationIdParams) {
+        const matching = Array.from(store.events.values()).filter(
+          (event) => event.correlationId === params.correlationId
+        );
+
+        const page = paginate(
+          matching,
+          (event) => event.eventId,
+          {
+            sortOrder: params.pagination?.sortOrder,
+            limit: params.pagination?.limit,
+            cursor: params.pagination?.cursor,
+          },
+          'asc',
+          100
+        );
+
+        return {
+          data: page.data.map((event) => filterEventData(event, params.resolveData)),
+          cursor: page.cursor,
+          hasMore: page.hasMore,
+        };
+      },
+    },
+
+    hooks: {
+      async get(hookId: string, params?: GetHookParams) {
+        const hook = store.hooks.get(hookId);
         if (!hook) {
           throw new WorkflowAPIError(`Hook not found: ${hookId}`, {
             status: 404,
           });
         }
 
-        // TODO: Delete from your database
-        hooks.delete(hookId);
         return filterHookData(hook, params?.resolveData);
+      },
+
+      async getByToken(token: string, params?: GetHookParams) {
+        const hookId = store.hookIdsByToken.get(token);
+        if (!hookId) {
+          throw new WorkflowAPIError(`Hook not found for token: ${token}`, {
+            status: 404,
+          });
+        }
+
+        const hook = store.hooks.get(hookId);
+        if (!hook) {
+          throw new WorkflowAPIError(`Hook not found: ${hookId}`, {
+            status: 404,
+          });
+        }
+
+        return filterHookData(hook, params?.resolveData);
+      },
+
+      async list(params: ListHooksParams) {
+        let hooks = Array.from(store.hooks.values());
+
+        if (params.runId) {
+          hooks = hooks.filter((hook) => hook.runId === params.runId);
+        }
+
+        const page = paginate(
+          hooks,
+          (hook) => hook.hookId,
+          {
+            sortOrder: params.pagination?.sortOrder,
+            limit: params.pagination?.limit,
+            cursor: params.pagination?.cursor,
+          },
+          'desc',
+          100
+        );
+
+        return {
+          data: page.data.map((hook) => filterHookData(hook, params.resolveData)),
+          cursor: page.cursor,
+          hasMore: page.hasMore,
+        };
       },
     },
   };
+
+  return storage as unknown as Storage;
 }
