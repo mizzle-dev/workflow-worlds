@@ -13,6 +13,7 @@ import {
   index,
   uniqueIndex,
   customType,
+  primaryKey,
 } from 'drizzle-orm/sqlite-core';
 import { encode, decode } from 'cbor-x';
 
@@ -203,3 +204,28 @@ export const streamChunks = sqliteTable(
   (table) => [index('idx_chunks_stream').on(table.streamName, table.chunkId)]
 );
 
+// =============================================================================
+// Run Spec Versions
+// =============================================================================
+
+export const runSpecVersions = sqliteTable('workflow_run_versions', {
+  runId: text('run_id').primaryKey(),
+  specVersion: integer('spec_version').notNull(),
+});
+
+// =============================================================================
+// Stream to Run Mapping
+// =============================================================================
+
+export const streamRuns = sqliteTable(
+  'stream_runs',
+  {
+    runId: text('run_id').notNull(),
+    streamName: text('stream_name').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.runId, table.streamName] }),
+    index('idx_stream_runs_run').on(table.runId),
+  ]
+);

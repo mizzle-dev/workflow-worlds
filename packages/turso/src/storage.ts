@@ -216,15 +216,7 @@ export interface StorageConfig {
 export function createStorage(config: StorageConfig): Storage {
   const db = drizzle(config.client, { schema });
 
-  const specVersionTableReady = config.client.execute(`
-    CREATE TABLE IF NOT EXISTS workflow_run_versions (
-      run_id TEXT PRIMARY KEY,
-      spec_version INTEGER NOT NULL
-    )
-  `);
-
   async function setRunSpecVersion(runId: string, specVersion: number): Promise<void> {
-    await specVersionTableReady;
     await config.client.execute({
       sql: `INSERT INTO workflow_run_versions (run_id, spec_version)
             VALUES (?, ?)
@@ -234,7 +226,6 @@ export function createStorage(config: StorageConfig): Storage {
   }
 
   async function getRunSpecVersion(runId: string): Promise<number | undefined> {
-    await specVersionTableReady;
     const result = await config.client.execute({
       sql: 'SELECT spec_version FROM workflow_run_versions WHERE run_id = ?',
       args: [runId],

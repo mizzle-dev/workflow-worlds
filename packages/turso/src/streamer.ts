@@ -64,14 +64,6 @@ function rowToChunk(row: Row): StreamChunk {
  */
 export function createStreamer(config: StreamerConfig): Streamer {
   const { client } = config;
-  const tableInitPromise = client.execute(`
-    CREATE TABLE IF NOT EXISTS stream_runs (
-      run_id TEXT NOT NULL,
-      stream_name TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (run_id, stream_name)
-    )
-  `);
 
   // Event emitter for real-time notifications
   // For multi-process, use external pub/sub (Redis, etc.)
@@ -87,7 +79,6 @@ export function createStreamer(config: StreamerConfig): Streamer {
     runId: string,
     streamName: string
   ): Promise<void> {
-    await tableInitPromise;
     await client.execute({
       sql: `INSERT OR IGNORE INTO stream_runs (run_id, stream_name, created_at)
             VALUES (?, ?, ?)`,
@@ -156,7 +147,6 @@ export function createStreamer(config: StreamerConfig): Streamer {
     },
 
     async listStreamsByRunId(runId: string): Promise<string[]> {
-      await tableInitPromise;
       const result = await client.execute({
         sql: `SELECT stream_name FROM stream_runs
               WHERE run_id = ?
