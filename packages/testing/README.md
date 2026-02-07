@@ -13,6 +13,7 @@ Extended testing utilities for [Workflow World](https://github.com/vercel/workfl
 - **Hook Cleanup Tests** - Token reuse after workflow completion
 - **Streamer Tests** - Binary data, named streams, null bytes
 - **Output Preservation Tests** - Null/undefined distinction in step outputs
+- **Workflow 4.1 Compatibility Helpers** - Supports legacy and event-sourced storage paths
 
 ## Installation
 

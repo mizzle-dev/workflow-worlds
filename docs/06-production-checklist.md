@@ -2,6 +2,8 @@
 
 A comprehensive checklist for ensuring your World implementation is production-ready.
 
+> **Workflow 4.1 note:** treat direct `runs/steps/hooks` writes as adapter internals; runtime transitions should be validated through `storage.events.create(...)`.
+
 ## Core Functionality
 
 ### Storage

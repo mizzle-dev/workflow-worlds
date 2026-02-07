@@ -2,6 +2,16 @@
 
 Custom World implementations for the [Workflow DevKit](https://github.com/vercel/workflow).
 
+## Workflow 4.1 Status
+
+This repository now targets the Workflow 4.1 world contract (`@workflow/world@4.1.x`).
+
+- World implementations now use event-sourced state transitions via `storage.events.create(...)`.
+- Legacy runs are still supported with guarded compatibility behavior.
+- Turso requires running migrations before use and after upgrades (`pnpm exec workflow-turso-setup`).
+
+See [Workflow 4.1 Migration Guide](./docs/07-workflow-4.1-migration.md) for upgrade steps and rollout checks.
+
 ## What is a World?
 
 A World provides the infrastructure layer for Workflow DevKit, handling:
@@ -48,6 +58,7 @@ A World provides the infrastructure layer for Workflow DevKit, handling:
 - [Testing](./docs/05-testing.md) - Running the test suite
 - [Production Checklist](./docs/06-production-checklist.md) - Production readiness
 - [Release Guide](./docs/releases.md) - Stable and beta release workflows
+- [Workflow 4.1 Migration Guide](./docs/07-workflow-4.1-migration.md) - Safe upgrade and legacy-run strategy
 
 ## AI/LLM Resources
 

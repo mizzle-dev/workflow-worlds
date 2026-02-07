@@ -2,6 +2,8 @@
 
 A step-by-step tutorial for building a custom World implementation.
 
+> **Workflow 4.1 note:** New write paths should be centered in `storage.events.create(...)` with read/list methods on `runs`, `steps`, and `hooks`. See [07 - Workflow 4.1 Migration Guide](./07-workflow-4.1-migration.md) for the migration strategy.
+
 ## Project Setup
 
 ### 1. Package Structure

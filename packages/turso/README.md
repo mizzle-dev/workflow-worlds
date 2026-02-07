@@ -9,6 +9,7 @@ A complete Turso/libSQL-backed World implementation for the Workflow DevKit.
 ## Features
 
 - **Storage**: Uses SQL tables for runs, steps, events, and hooks
+- **Workflow 4.1 Contract**: Event-sourced transitions with legacy-run compatibility
 - **Queue**: Polling-based with persistent messages, exponential backoff, graceful shutdown
 - **Streaming**: Real-time output via EventEmitter (single-process)
 - **Embedded or Remote**: Supports local SQLite files or remote Turso databases
@@ -42,6 +43,8 @@ pnpm exec workflow-turso-setup
 ```
 
 The setup command uses Drizzle migrations and is safe to run multiple times - it only applies pending migrations.
+
+If you are upgrading from a pre-4.1 release, run setup before restarting workers so new tables are present.
 
 ## Usage
 
@@ -147,6 +150,12 @@ Persistent message queue with status tracking, retry counts, and scheduling.
 ### stream_chunks
 Stream output chunks stored as binary blobs.
 
+### workflow_run_versions
+Per-run spec version tracking used for legacy compatibility routing.
+
+### stream_runs
+Run-to-stream mapping used by `listStreamsByRunId`.
+
 ## Development
 
 ### Prerequisites
@@ -199,7 +208,7 @@ The World initializes database connections lazily on first use:
 ```typescript
 const world = createWorld(config);
 // Database connection happens on first operation
-await world.runs.create({ ... });
+await world.getDeploymentId();
 ```
 
 ### Connection Caching
@@ -242,6 +251,11 @@ The implementation uses `WorkflowAPIError` from `@workflow/errors` for consisten
 3. **Single-Process Streaming**: The EventEmitter-based streamer works for single-process deployments; for multi-process, add external pub/sub
 
 4. **Schema Migrations**: Run `pnpm exec workflow-turso-setup` before first use and after package upgrades to apply any new migrations
+
+## Upgrade Notes (Workflow 4.1)
+
+- Turso now relies on schema migrations for new compatibility tables.
+- Ensure `workflow-turso-setup` runs as part of deployment before traffic is shifted.
 
 5. **Graceful Shutdown**: The queue waits up to 30 seconds for in-flight messages during shutdown
 

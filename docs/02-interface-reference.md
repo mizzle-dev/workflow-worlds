@@ -4,6 +4,9 @@ Complete API documentation for the World interface and all its components.
 
 > **Source:** All TypeScript interfaces are exported from the `@workflow/world` npm package.
 > Install with `npm install @workflow/world` to get type definitions.
+>
+> **Workflow 4.1 note:** Runtime writes are event-sourced through `storage.events.create(...)`.
+> For migration guidance and legacy-run behavior, see [07 - Workflow 4.1 Migration Guide](./07-workflow-4.1-migration.md).
 
 ## World Interface
 

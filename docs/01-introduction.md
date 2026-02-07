@@ -1,5 +1,7 @@
 # Introduction to Worlds
 
+> **Workflow 4.1 note:** Runtime state transitions are event-sourced through `storage.events.create(...)`. See [07 - Workflow 4.1 Migration Guide](./07-workflow-4.1-migration.md) for upgrade-specific behavior.
+
 ## What is a World?
 
 A **World** is the interface that abstracts how workflows communicate with the outside world. It provides three core capabilities:

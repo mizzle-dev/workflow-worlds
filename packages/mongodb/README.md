@@ -9,6 +9,7 @@ A complete MongoDB-backed World implementation for the Workflow DevKit.
 ## Features
 
 - **Storage**: Uses MongoDB collections for runs, steps, events, and hooks
+- **Workflow 4.1 Contract**: Event-sourced transitions with legacy-run compatibility
 - **Queue**: Production-ready with persistent messages, exponential backoff, graceful shutdown
 - **Streaming**: Real-time output via MongoDB change streams (with fallback to polling)
 - **Production-ready**: Proper indexing, error handling, connection pooling, and lock management
@@ -101,6 +102,7 @@ The MongoDB World creates the following collections:
 - `events` - Event log for workflow replay
 - `hooks` - Hook registrations for pausing workflows
 - `stream_chunks` - Stream output chunks
+- `stream_runs` - Run-to-stream mapping for `listStreamsByRunId`
 - `queue_messages` - Persistent message queue with status tracking
 
 ## Indexes
@@ -131,6 +133,10 @@ Proper indexes are created automatically on first use:
 ### Stream Chunks Collection
 - `{ streamName: 1, chunkId: 1 }`
 - `{ chunkId: 1 }` (unique)
+
+### Stream Runs Collection
+- `{ runId: 1 }`
+- `{ runId: 1, streamName: 1 }` (unique)
 
 ### Queue Messages Collection
 - `{ messageId: 1 }` (unique)
@@ -221,8 +227,14 @@ The World initializes MongoDB connections lazily on first use. This allows the `
 ```typescript
 const world = createWorld(config);
 // MongoDB connection happens on first operation
-await world.runs.create({ ... });
+await world.getDeploymentId();
 ```
+
+## Upgrade Notes (Workflow 4.1)
+
+- No manual migration script is required for MongoDB.
+- Required collections/indexes are created automatically on initialization.
+- Legacy runs are supported with guarded compatibility behavior to prevent invalid state transitions.
 
 ### Change Streams for Real-Time Updates
 

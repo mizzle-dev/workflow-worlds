@@ -30,6 +30,9 @@ Before building a custom World, you should understand:
 | [04 - Patterns & Practices](./04-patterns-and-practices.md) | Key patterns from production implementations |
 | [05 - Testing](./05-testing.md) | Using `@workflow/world-testing` to validate your implementation |
 | [06 - Production Checklist](./06-production-checklist.md) | Considerations for production-ready worlds |
+| [07 - Workflow 4.1 Migration Guide](./07-workflow-4.1-migration.md) | Migrating adapters to the 4.1 event-sourced contract safely |
+
+> Note: If you are upgrading an existing world implementation, start with [07 - Workflow 4.1 Migration Guide](./07-workflow-4.1-migration.md).
 
 ## Quick Start with the Starter
 

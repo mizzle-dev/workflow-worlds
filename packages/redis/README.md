@@ -9,6 +9,7 @@ A production-ready [World](https://github.com/vercel/workflow) implementation us
 ## Features
 
 - **Redis Storage** - Runs, steps, events, and hooks stored in Redis Hashes with Sorted Set indexes
+- **Workflow 4.1 Contract** - Event-sourced transitions with legacy-run compatibility
 - **BullMQ Queues** - Production-grade job processing with native deduplication and retries
 - **Redis Streams** - Real-time output streaming with Pub/Sub notifications
 - **Connection Pooling** - Automatic client caching across multiple `createWorld()` calls
@@ -123,7 +124,14 @@ Uses Redis Streams for ordered, persistent chunk delivery:
 
 {prefix}:stream:{name}             # Stream - output chunks
 {prefix}:stream:{name}:closed      # String - stream closed flag
+{prefix}:stream:runs:{runId}       # Set - stream names for a run
 ```
+
+## Upgrade Notes (Workflow 4.1)
+
+- No manual migration script is required for Redis.
+- New structures are key-based and created on demand.
+- Legacy runs are supported with guarded compatibility behavior to prevent invalid state transitions.
 
 ## Usage with Workflow DevKit
 
