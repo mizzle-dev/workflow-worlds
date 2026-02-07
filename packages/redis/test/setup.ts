@@ -18,6 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let container: Awaited<ReturnType<RedisContainer['start']>> | null = null;
 let redisClient: Redis | undefined;
+let startedLocalContainer = false;
 
 beforeAll(async () => {
   // Skip testcontainers if env var is already set (e.g., GitHub Actions services)
@@ -27,6 +28,7 @@ beforeAll(async () => {
   }
 
   container = await new RedisContainer('redis:7-alpine').start();
+  startedLocalContainer = true;
   process.env.WORKFLOW_REDIS_URI = container.getConnectionUrl();
   console.log(`[test] Redis container started at ${process.env.WORKFLOW_REDIS_URI}`);
 }, 120_000);
@@ -39,6 +41,12 @@ afterAll(async () => {
   if (container) {
     await container.stop();
     console.log('[test] Redis container stopped');
+    container = null;
+  }
+  // If this setup created the URI, clear it so the next test file starts its own container.
+  if (startedLocalContainer) {
+    delete process.env.WORKFLOW_REDIS_URI;
+    startedLocalContainer = false;
   }
 });
 
