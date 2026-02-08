@@ -95,6 +95,13 @@ export interface QueueConfig {
    * Default: 7
    */
   messageRetentionDays?: number;
+
+  /**
+   * Whether to use MongoDB Change Streams for queue notifications.
+   * If false, queue processing uses polling only.
+   * Default: true (falls back to polling if change streams unsupported)
+   */
+  useChangeStreams?: boolean;
 }
 
 // =============================================================================
@@ -268,6 +275,10 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
   const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
   const shutdownTimeoutMs = config.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
   const messageRetentionDays = config.messageRetentionDays ?? DEFAULT_MESSAGE_RETENTION_DAYS;
+  const useChangeStreams = config.useChangeStreams
+    ?? (process.env.WORKFLOW_MONGODB_CHANGE_STREAMS !== undefined
+      ? process.env.WORKFLOW_MONGODB_CHANGE_STREAMS === 'true'
+      : true);
 
   // Get or create MongoDB client
   const { MongoClient } = await import('mongodb');
@@ -767,6 +778,11 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
    * Create the appropriate watcher based on MongoDB capabilities.
    */
   async function createWatcher(): Promise<Watcher> {
+    if (!useChangeStreams) {
+      debug('Change Streams disabled via config/env - using polling mode');
+      return createPollingWatcher();
+    }
+
     const supportsChangeStreams = await detectChangeStreamSupport(messagesCollection);
 
     if (supportsChangeStreams) {

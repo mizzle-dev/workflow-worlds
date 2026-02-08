@@ -251,6 +251,7 @@ jobs:
         env:
           WORKFLOW_TARGET_WORLD: "@workflow-worlds/mongodb"
           WORKFLOW_MONGODB_URI: "mongodb://localhost:27017/workflow"
+          WORKFLOW_MONGODB_CHANGE_STREAMS: "false"
 
       - name: Run benchmarks
         run: |
@@ -266,6 +267,7 @@ jobs:
           WORLD_NAME: mongodb
           WORKFLOW_TARGET_WORLD: "@workflow-worlds/mongodb"
           WORKFLOW_MONGODB_URI: "mongodb://localhost:27017/workflow"
+          WORKFLOW_MONGODB_CHANGE_STREAMS: "false"
 
       - name: Render benchmark results
         uses: ./.github/actions/render-benchmarks
