@@ -272,7 +272,7 @@ Before considering implementation complete:
 
 ### Storage
 - [ ] All 5 test suites pass
-- [ ] ULID prefixes used correctly (wrun_, wstep_, wevt_, whook_)
+- [ ] ULID prefixes used correctly (wrun_, step_, evnt_, hook_)
 - [ ] startedAt set only once
 - [ ] completedAt set on terminal status
 - [ ] Hooks cleaned up on run completion

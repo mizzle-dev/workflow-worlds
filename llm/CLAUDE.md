@@ -82,8 +82,8 @@ import { monotonicFactory } from 'ulid';
 const generateUlid = monotonicFactory();
 
 const runId = `wrun_${generateUlid()}`;
-const stepId = `wstep_${generateUlid()}`;
-const eventId = `wevt_${generateUlid()}`;
+const stepId = `step_${generateUlid()}`;
+const eventId = `evnt_${generateUlid()}`;
 ```
 
 ### 2. Timestamp Management

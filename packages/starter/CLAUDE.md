@@ -14,7 +14,7 @@ Replace each file incrementally, testing after each:
 ### 1. storage.ts (largest)
 - Replace Maps with your database (MongoDB, PostgreSQL, etc.)
 - Keep deep cloning pattern for in-memory caches
-- Maintain ULID prefixes (wrun_, wstep_, wevt_, whook_)
+- Maintain ULID prefixes (wrun_, step_, evnt_, hook_)
 
 ### 2. queue.ts
 - Replace setTimeout with your queue (BullMQ, Agenda, SQS)

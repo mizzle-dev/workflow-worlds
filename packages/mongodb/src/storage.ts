@@ -314,7 +314,7 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
       const event: Event = {
         ...data,
         runId,
-        eventId: `wevt_${generateUlid()}`,
+        eventId: `evnt_${generateUlid()}`,
         createdAt: new Date(),
         specVersion: SPEC_VERSION_CURRENT,
       } as Event;
@@ -468,7 +468,7 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
               const idempotentEvent: Event = {
                 ...data,
                 runId: effectiveRunId,
-                eventId: `wevt_${generateUlid()}`,
+                eventId: `evnt_${generateUlid()}`,
                 createdAt: now,
                 specVersion: effectiveSpecVersion,
               } as Event;
@@ -741,7 +741,7 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
               correlationId: data.correlationId,
               eventData: { token: data.eventData.token },
               runId: effectiveRunId,
-              eventId: `wevt_${generateUlid()}`,
+              eventId: `evnt_${generateUlid()}`,
               createdAt: now,
               specVersion: effectiveSpecVersion,
             } as Event;
@@ -804,7 +804,7 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
         const event: Event = {
           ...data,
           runId: effectiveRunId,
-          eventId: `wevt_${generateUlid()}`,
+          eventId: `evnt_${generateUlid()}`,
           createdAt: now,
           specVersion: effectiveSpecVersion,
         } as Event;

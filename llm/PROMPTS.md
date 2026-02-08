@@ -90,7 +90,7 @@ Read packages/starter/src/storage.ts for a working reference.
 
 Requirements:
 - Implement runs, steps, events, hooks namespaces
-- Use ULID for ID generation with prefixes (wrun_, wstep_, wevt_, whook_)
+- Use ULID for ID generation with prefixes (wrun_, step_, evnt_, hook_)
 - Handle pagination with cursor-based approach
 - Support resolveData filtering
 - Clean up hooks on run completion

@@ -175,7 +175,7 @@ Uses monotonic ULIDs with prefixes for all entities:
 
 ```typescript
 const runId = `wrun_${generateUlid()}`;
-const stepId = `wstep_${generateUlid()}`;
+const stepId = `step_${generateUlid()}`;
 ```
 
 ## License

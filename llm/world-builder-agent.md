@@ -62,9 +62,9 @@ Run tests after each component to catch issues early.
 ### ULIDs with Prefixes
 ```typescript
 const runId = `wrun_${generateUlid()}`;
-const stepId = `wstep_${generateUlid()}`;
-const eventId = `wevt_${generateUlid()}`;
-const hookId = `whook_${generateUlid()}`;
+const stepId = `step_${generateUlid()}`;
+const eventId = `evnt_${generateUlid()}`;
+const hookId = `hook_${generateUlid()}`;
 ```
 
 ### Timestamp Idempotency

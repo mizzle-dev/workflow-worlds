@@ -177,9 +177,9 @@ Optimized for Vercel's serverless platform:
 All implementations use ULIDs (Universally Unique Lexicographically Sortable Identifiers) with prefixes:
 
 - `wrun_` - Workflow runs
-- `wstep_` or `step_` - Steps
-- `wevt_` or `evnt_` - Events
-- `whook_` - Hooks
+- `step_` - Steps
+- `evnt_` - Events
+- `hook_` - Hooks
 - `msg_` - Queue messages
 - `strm_` or `chnk_` - Stream chunks
 

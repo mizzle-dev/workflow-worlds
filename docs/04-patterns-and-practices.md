@@ -23,9 +23,9 @@ const generateUlid = monotonicFactory();
 
 // Generate IDs with prefixes for type identification
 const runId = `wrun_${generateUlid()}`;     // Workflow run
-const stepId = `wstep_${generateUlid()}`;   // Step
-const eventId = `wevt_${generateUlid()}`;   // Event
-const hookId = `whook_${generateUlid()}`;   // Hook
+const stepId = `step_${generateUlid()}`;    // Step
+const eventId = `evnt_${generateUlid()}`;   // Event
+const hookId = `hook_${generateUlid()}`;    // Hook
 const messageId = `msg_${generateUlid()}`;  // Queue message
 const chunkId = `chnk_${generateUlid()}`;   // Stream chunk
 ```
@@ -40,8 +40,8 @@ function ulidToDate(ulid: string): Date {
 }
 
 // Usage
-const eventId = 'wevt_01HX7K8J4Q5R6S7T8U9V0W1X2Y';
-const ulid = eventId.replace(/^wevt_/, '');
+const eventId = 'evnt_01HX7K8J4Q5R6S7T8U9V0W1X2Y';
+const ulid = eventId.replace(/^evnt_/, '');
 const createdAt = ulidToDate(ulid);
 ```
 

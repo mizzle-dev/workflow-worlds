@@ -546,7 +546,7 @@ export async function createStorage(options: {
     // =========================================================================
     events: {
       async create(runId, data: AnyEventRequest, params): Promise<Event> {
-        const eventId = `wevt_${generateUlid()}`;
+        const eventId = `evnt_${generateUlid()}`;
         const now = new Date();
         const score = ulidToScore(eventId);
 
@@ -776,7 +776,7 @@ export async function createStorage(options: {
             const [nextCursor, foundKeys] = await redis.scan(
               cursorIter,
               'MATCH',
-              `${prefix}:hooks:whook_*`,
+              `${prefix}:hooks:hook_*`,
               'COUNT',
               100
             );
@@ -1027,6 +1027,7 @@ export async function createStorage(options: {
         switch (data.eventType) {
           case 'run_started':
             run = await legacyStorage.runs.update(runId, { status: 'running' });
+            run.specVersion = currentRun.specVersion;
             break;
           case 'run_completed':
             run = await legacyStorage.runs.update(runId, {
@@ -1034,6 +1035,7 @@ export async function createStorage(options: {
               output: data.eventData.output,
               error: undefined,
             });
+            run.specVersion = currentRun.specVersion;
             break;
           case 'run_failed': {
             const message =
@@ -1049,6 +1051,7 @@ export async function createStorage(options: {
                 code: data.eventData.errorCode,
               },
             });
+            run.specVersion = currentRun.specVersion;
             break;
           }
           case 'run_cancelled':
@@ -1057,6 +1060,7 @@ export async function createStorage(options: {
               output: undefined,
               error: undefined,
             });
+            run.specVersion = currentRun.specVersion;
             break;
           case 'step_created': {
             const stepId = data.correlationId;
@@ -1067,7 +1071,7 @@ export async function createStorage(options: {
               );
             }
             try {
-              await legacyStorage.steps.get(runId, stepId, { resolveData: 'all' });
+              await legacyStorage.steps.get(runId, stepId, { resolveData: 'none' });
               throw new WorkflowAPIError(`Step '${stepId}' already exists`, {
                 status: 409,
               });
@@ -1093,29 +1097,26 @@ export async function createStorage(options: {
           }
           case 'step_started': {
             const stepId = data.correlationId;
-            if (!stepId) {
+            if (!stepId || !validatedStep) {
               throw new WorkflowAPIError(
                 'correlationId is required for step_started',
                 { status: 400 }
               );
             }
-            const existingStep = await legacyStorage.steps.get(runId, stepId, {
-              resolveData: 'all',
-            });
-            if (existingStep.retryAfter && existingStep.retryAfter.getTime() > Date.now()) {
+            if (validatedStep.retryAfter && validatedStep.retryAfter.getTime() > Date.now()) {
               const err = new WorkflowAPIError(
                 `Cannot start step '${stepId}' before retryAfter`,
                 { status: 425 }
               );
               (err as WorkflowAPIError & { meta?: Record<string, string> }).meta = {
                 stepId,
-                retryAfter: existingStep.retryAfter.toISOString(),
+                retryAfter: validatedStep.retryAfter.toISOString(),
               };
               throw err;
             }
             step = await legacyStorage.steps.update(runId, stepId, {
               status: 'running',
-              attempt: data.eventData?.attempt ?? existingStep.attempt + 1,
+              attempt: validatedStep.attempt + 1,
               retryAfter: undefined,
             });
             break;
