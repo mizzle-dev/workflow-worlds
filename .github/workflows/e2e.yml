@@ -149,7 +149,7 @@ jobs:
       - name: Install turso world
         working-directory: .upstream
         run: |
-          TARBALL=$(ls ../.tarballs/workflow-worlds-turso-*.tgz | head -1)
+          TARBALL=$(readlink -f ../.tarballs/workflow-worlds-turso-*.tgz | head -1)
           pnpm --filter ${{ env.APP_NAME }} add "$TARBALL"
 
       - name: Setup turso database
@@ -241,7 +241,7 @@ jobs:
       - name: Install mongodb world
         working-directory: .upstream
         run: |
-          TARBALL=$(ls ../.tarballs/workflow-worlds-mongodb-*.tgz | head -1)
+          TARBALL=$(readlink -f ../.tarballs/workflow-worlds-mongodb-*.tgz | head -1)
           pnpm --filter ${{ env.APP_NAME }} add "$TARBALL"
 
       - name: Resolve symlinks
@@ -328,7 +328,7 @@ jobs:
       - name: Install redis world
         working-directory: .upstream
         run: |
-          TARBALL=$(ls ../.tarballs/workflow-worlds-redis-*.tgz | head -1)
+          TARBALL=$(readlink -f ../.tarballs/workflow-worlds-redis-*.tgz | head -1)
           pnpm --filter ${{ env.APP_NAME }} add "$TARBALL"
 
       - name: Resolve symlinks
