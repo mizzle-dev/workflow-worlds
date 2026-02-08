@@ -2,6 +2,8 @@
 
 A step-by-step tutorial for building a custom World implementation.
 
+> **Workflow 4.1 note:** New write paths should be centered in `storage.events.create(...)` with read/list methods on `runs`, `steps`, and `hooks`. See [07 - Workflow 4.1 Migration Guide](./07-workflow-4.1-migration.md) for the migration strategy.
+
 ## Project Setup
 
 ### 1. Package Structure
@@ -246,7 +248,7 @@ function createRunsStorage(config: MyBackendConfig): Storage['runs'] {
       // Apply resolveData filtering
       if (params?.resolveData === 'none') {
         return {
-          data: data.map(r => ({ ...r, input: [], output: undefined })),
+          data: data.map(r => ({ ...r, input: undefined, output: undefined })),
           cursor: nextCursor,
           hasMore,
         };
@@ -254,33 +256,11 @@ function createRunsStorage(config: MyBackendConfig): Storage['runs'] {
 
       return { data, cursor: nextCursor, hasMore };
     },
-
-    async cancel(id, params) {
-      const run = await this.update(id, { status: 'cancelled' });
-      if (params?.resolveData === 'none') {
-        return { ...run, input: [], output: undefined };
-      }
-      return run;
-    },
-
-    async pause(id, params) {
-      const run = await this.update(id, { status: 'paused' });
-      if (params?.resolveData === 'none') {
-        return { ...run, input: [], output: undefined };
-      }
-      return run;
-    },
-
-    async resume(id, params) {
-      const run = await this.update(id, { status: 'running' });
-      if (params?.resolveData === 'none') {
-        return { ...run, input: [], output: undefined };
-      }
-      return run;
-    },
   };
 }
 ```
+
+> In Workflow 4.1, run/step/hook state mutations are performed via `storage.events.create(...)` rather than direct `runs.update()` / `steps.update()` mutators.
 
 ### Implementing Steps Storage
 

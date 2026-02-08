@@ -9,6 +9,8 @@ A complete in-memory [World](https://github.com/vercel/workflow) implementation 
 ## Features
 
 - **In-Memory Storage** - Runs, steps, events, and hooks stored in Maps
+- **Workflow 4.1 Contract** - Event-sourced transitions via `storage.events.create(...)`
+- **Legacy Run Compatibility** - Safe handling for pre-event-sourced runs
 - **setTimeout Queue** - Simple queue processing via HTTP callbacks
 - **In-Memory Streamer** - Real-time output streaming with event emitters
 - **Full Test Coverage** - Passes all `@workflow/world-testing` suites
@@ -21,6 +23,13 @@ npm install @workflow-worlds/starter
 # or
 pnpm add @workflow-worlds/starter
 ```
+
+## Workflow 4.1 Notes
+
+- New writes should be implemented in `storage.events.create(...)`.
+- `storage.runs`, `storage.steps`, and `storage.hooks` should primarily provide read/list access for runtime use.
+- For streamer parity with production worlds, implement `listStreamsByRunId(runId)` in your backend adaptation.
+- Keep legacy-run behavior explicitly tested if you support upgrades from older data.
 
 ## Quick Start
 
@@ -166,7 +175,7 @@ Uses monotonic ULIDs with prefixes for all entities:
 
 ```typescript
 const runId = `wrun_${generateUlid()}`;
-const stepId = `wstep_${generateUlid()}`;
+const stepId = `step_${generateUlid()}`;
 ```
 
 ## License

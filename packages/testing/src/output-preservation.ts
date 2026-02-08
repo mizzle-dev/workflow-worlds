@@ -3,16 +3,18 @@
  *
  * Tests that workflow outputs survive storage round-trips correctly.
  * This catches issues where outputs become empty objects {} or lose properties.
- *
- * These tests are designed to catch the exact failures seen in e2e tests:
- * - addTenWorkflow: output should be a number (133)
- * - retryAttemptCounterWorkflow: output should be { finalAttempt: 3 }
- * - stepFunctionPassingWorkflow: output should be a number (40)
- * - spawnWorkflowFromStepWorkflow: output should have childRunId and childResult
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import type { Storage } from '@workflow/world';
+import {
+  completeRun,
+  completeStep,
+  createRun,
+  createStep,
+  retryStep,
+  startStep,
+} from './storage-compat.js';
 
 export interface OutputPreservationTestOptions {
   /**
@@ -44,29 +46,22 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
 
     describe('run outputs', () => {
       test('preserves number output (addTenWorkflow pattern)', async () => {
-        // Simulates: workflow that returns input + 10
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'addTen',
           input: [123],
         });
 
-        // Update with numeric output
-        await storage.runs.update(run.runId, {
-          status: 'completed',
-          output: 133,
-        });
+        await completeRun(storage, run.runId, 133);
 
         const retrieved = await storage.runs.get(run.runId);
 
-        // This MUST be exactly 133, not {} or undefined
         expect(retrieved.output).toBe(133);
         expect(typeof retrieved.output).toBe('number');
       });
 
       test('preserves object output with properties (retryAttemptCounter pattern)', async () => {
-        // Simulates: workflow that returns { finalAttempt: 3 }
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'retryAttemptCounter',
           input: [],
@@ -74,22 +69,16 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
 
         const expectedOutput = { finalAttempt: 3 };
 
-        await storage.runs.update(run.runId, {
-          status: 'completed',
-          output: expectedOutput,
-        });
+        await completeRun(storage, run.runId, expectedOutput);
 
         const retrieved = await storage.runs.get(run.runId);
 
-        // This MUST match the exact object, not {}
         expect(retrieved.output).toEqual(expectedOutput);
-        expect(retrieved.output).toMatchObject({ finalAttempt: 3 });
         expect((retrieved.output as { finalAttempt: number }).finalAttempt).toBe(3);
       });
 
       test('preserves complex object output (spawnWorkflow pattern)', async () => {
-        // Simulates: workflow that spawns child and returns results
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'spawnWorkflowFromStep',
           input: [42],
@@ -102,23 +91,15 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
           metadata: { spawned: true },
         };
 
-        await storage.runs.update(run.runId, {
-          status: 'completed',
-          output: expectedOutput,
-        });
+        await completeRun(storage, run.runId, expectedOutput);
 
         const retrieved = await storage.runs.get(run.runId);
 
-        // All properties must be preserved
         expect(retrieved.output).toEqual(expectedOutput);
-        expect((retrieved.output as typeof expectedOutput).childRunId).toBe('wrun_01ABC123');
-        expect((retrieved.output as typeof expectedOutput).childResult).toBe(84);
-        expect((retrieved.output as typeof expectedOutput).parentInput).toBe(42);
-        expect((retrieved.output as typeof expectedOutput).metadata.spawned).toBe(true);
       });
 
       test('preserves string output', async () => {
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'stringOutput',
           input: [],
@@ -126,10 +107,7 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
 
         const expectedOutput = 'Wrapped: Result: 21';
 
-        await storage.runs.update(run.runId, {
-          status: 'completed',
-          output: expectedOutput,
-        });
+        await completeRun(storage, run.runId, expectedOutput);
 
         const retrieved = await storage.runs.get(run.runId);
 
@@ -138,7 +116,7 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
       });
 
       test('preserves array output', async () => {
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'arrayOutput',
           input: [],
@@ -146,73 +124,57 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
 
         const expectedOutput = [1, 2, 3, 'four', { five: 5 }];
 
-        await storage.runs.update(run.runId, {
-          status: 'completed',
-          output: expectedOutput,
-        });
+        await completeRun(storage, run.runId, expectedOutput);
 
         const retrieved = await storage.runs.get(run.runId);
 
         expect(retrieved.output).toEqual(expectedOutput);
         expect(Array.isArray(retrieved.output)).toBe(true);
-        expect((retrieved.output as unknown[])[3]).toBe('four');
-        expect((retrieved.output as unknown[])[4]).toEqual({ five: 5 });
       });
 
       test('preserves boolean output', async () => {
-        const run = await storage.runs.create({
+        const runTrue = await createRun(storage, {
           deploymentId: 'test-deployment',
-          workflowName: 'booleanOutput',
+          workflowName: 'booleanOutputTrue',
           input: [],
         });
 
-        // Test true
-        await storage.runs.update(run.runId, {
-          status: 'completed',
-          output: true,
+        await completeRun(storage, runTrue.runId, true);
+        const retrievedTrue = await storage.runs.get(runTrue.runId);
+        expect(retrievedTrue.output).toBe(true);
+
+        const runFalse = await createRun(storage, {
+          deploymentId: 'test-deployment',
+          workflowName: 'booleanOutputFalse',
+          input: [],
         });
 
-        let retrieved = await storage.runs.get(run.runId);
-        expect(retrieved.output).toBe(true);
-        expect(typeof retrieved.output).toBe('boolean');
-
-        // Test false (important edge case)
-        await storage.runs.update(run.runId, {
-          output: false,
-        });
-
-        retrieved = await storage.runs.get(run.runId);
-        expect(retrieved.output).toBe(false);
-        expect(typeof retrieved.output).toBe('boolean');
+        await completeRun(storage, runFalse.runId, false);
+        const retrievedFalse = await storage.runs.get(runFalse.runId);
+        expect(retrievedFalse.output).toBe(false);
       });
 
       test('preserves null output', async () => {
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'nullOutput',
           input: [],
         });
 
-        await storage.runs.update(run.runId, {
-          status: 'completed',
-          output: null,
-        });
+        await completeRun(storage, run.runId, null);
 
         const retrieved = await storage.runs.get(run.runId);
         expect(retrieved.output).toBeNull();
       });
 
       test('preserves zero output', async () => {
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'zeroOutput',
           input: [],
         });
 
-        await storage.runs.update(run.runId, {
-          status: 'completed',
-          output: 0,
-        });
+        await completeRun(storage, run.runId, 0);
 
         const retrieved = await storage.runs.get(run.runId);
         expect(retrieved.output).toBe(0);
@@ -220,16 +182,13 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
       });
 
       test('preserves empty string output', async () => {
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'emptyStringOutput',
           input: [],
         });
 
-        await storage.runs.update(run.runId, {
-          status: 'completed',
-          output: '',
-        });
+        await completeRun(storage, run.runId, '');
 
         const retrieved = await storage.runs.get(run.runId);
         expect(retrieved.output).toBe('');
@@ -239,52 +198,50 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
 
     describe('step outputs', () => {
       test('preserves step output with attempt count', async () => {
-        // Simulates retry step that succeeds on attempt 3
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'retryTest',
           input: [],
         });
 
-        await storage.steps.create(run.runId, {
+        await createStep(storage, run.runId, {
           stepId: 'wstep_retry-step',
           stepName: 'retryStep',
           input: [],
         });
 
-        // Update with attempt count and output
-        await storage.steps.update(run.runId, 'wstep_retry-step', {
-          status: 'completed',
-          attempt: 3,
-          output: [3], // Step output is always an array
+        await startStep(storage, run.runId, 'wstep_retry-step');
+        await retryStep(storage, run.runId, 'wstep_retry-step', {
+          message: 'retry 1',
         });
+        await startStep(storage, run.runId, 'wstep_retry-step');
+        await retryStep(storage, run.runId, 'wstep_retry-step', {
+          message: 'retry 2',
+        });
+        await startStep(storage, run.runId, 'wstep_retry-step');
+
+        await completeStep(storage, run.runId, 'wstep_retry-step', [3]);
 
         const retrieved = await storage.steps.get(run.runId, 'wstep_retry-step');
 
         expect(retrieved.attempt).toBe(3);
         expect(retrieved.output).toEqual([3]);
-        expect((retrieved.output as number[])[0]).toBe(3);
       });
 
       test('preserves step output with function result', async () => {
-        // Simulates step that calls a function and returns result
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'functionTest',
           input: [],
         });
 
-        await storage.steps.create(run.runId, {
+        await createStep(storage, run.runId, {
           stepId: 'wstep_function-step',
           stepName: 'functionStep',
           input: [10],
         });
 
-        // Step returns [20] (doubleNumber(10) = 20)
-        await storage.steps.update(run.runId, 'wstep_function-step', {
-          status: 'completed',
-          output: [20],
-        });
+        await completeStep(storage, run.runId, 'wstep_function-step', [20]);
 
         const retrieved = await storage.steps.get(run.runId, 'wstep_function-step');
 
@@ -293,13 +250,13 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
       });
 
       test('preserves step output with complex object', async () => {
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'complexStepTest',
           input: [],
         });
 
-        await storage.steps.create(run.runId, {
+        await createStep(storage, run.runId, {
           stepId: 'wstep_complex-step',
           stepName: 'complexStep',
           input: [],
@@ -311,18 +268,11 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
           items: [1, 2, 3],
         };
 
-        await storage.steps.update(run.runId, 'wstep_complex-step', {
-          status: 'completed',
-          output: [complexOutput],
-        });
+        await completeStep(storage, run.runId, 'wstep_complex-step', [complexOutput]);
 
         const retrieved = await storage.steps.get(run.runId, 'wstep_complex-step');
 
         expect(retrieved.output).toEqual([complexOutput]);
-        const output = (retrieved.output as [typeof complexOutput])[0];
-        expect(output.result).toBe('success');
-        expect(output.data.nested.value).toBe(42);
-        expect(output.items).toEqual([1, 2, 3]);
       });
     });
 
@@ -330,7 +280,7 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
       test('preserves run input array', async () => {
         const input = [123, 'test', { key: 'value' }, [1, 2, 3]];
 
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'inputTest',
           input,
@@ -339,14 +289,10 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
         const retrieved = await storage.runs.get(run.runId);
 
         expect(retrieved.input).toEqual(input);
-        expect(retrieved.input[0]).toBe(123);
-        expect(retrieved.input[1]).toBe('test');
-        expect(retrieved.input[2]).toEqual({ key: 'value' });
-        expect(retrieved.input[3]).toEqual([1, 2, 3]);
       });
 
       test('preserves step input array', async () => {
-        const run = await storage.runs.create({
+        const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'stepInputTest',
           input: [],
@@ -354,7 +300,7 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
 
         const stepInput = [42, { config: { enabled: true } }];
 
-        await storage.steps.create(run.runId, {
+        await createStep(storage, run.runId, {
           stepId: 'wstep_input-step',
           stepName: 'inputStep',
           input: stepInput,
@@ -363,8 +309,6 @@ export function outputPreservationTests(options: OutputPreservationTestOptions) 
         const retrieved = await storage.steps.get(run.runId, 'wstep_input-step');
 
         expect(retrieved.input).toEqual(stepInput);
-        expect(retrieved.input[0]).toBe(42);
-        expect((retrieved.input[1] as { config: { enabled: boolean } }).config.enabled).toBe(true);
       });
     });
   });

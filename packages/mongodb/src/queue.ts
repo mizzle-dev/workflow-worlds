@@ -95,6 +95,13 @@ export interface QueueConfig {
    * Default: 7
    */
   messageRetentionDays?: number;
+
+  /**
+   * Whether to use MongoDB Change Streams for queue notifications.
+   * If false, queue processing uses polling only.
+   * Default: true (falls back to polling if change streams unsupported)
+   */
+  useChangeStreams?: boolean;
 }
 
 // =============================================================================
@@ -268,6 +275,10 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
   const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
   const shutdownTimeoutMs = config.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
   const messageRetentionDays = config.messageRetentionDays ?? DEFAULT_MESSAGE_RETENTION_DAYS;
+  const useChangeStreams = config.useChangeStreams
+    ?? (process.env.WORKFLOW_MONGODB_CHANGE_STREAMS !== undefined
+      ? process.env.WORKFLOW_MONGODB_CHANGE_STREAMS === 'true'
+      : true);
 
   // Get or create MongoDB client
   const { MongoClient } = await import('mongodb');
@@ -558,7 +569,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
           msg.maxRetries
         );
 
-        console.error('[mongodb-world] Message processing failed:', {
+        debug('Message processing failed:', {
           messageId: msg.messageId,
           queueName: msg.queueName,
           status: response.status,
@@ -580,7 +591,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
           msg.maxRetries
         );
 
-        console.error('[mongodb-world] Network error:', err);
+        debug('Network error:', err);
       }
     } finally {
       state.inflightMessages.delete(msg.messageId);
@@ -651,12 +662,12 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
                 await acquireConcurrency();
                 // Process in background
                 processMessage(msg, lock.lockToken).catch((err) => {
-                  console.error('[mongodb-world] Error processing message:', err);
+                  debug('Error processing message:', err);
                 });
               }
             }
           } catch (err) {
-            console.error('[mongodb-world] Poll error:', err);
+            debug('Poll error:', err);
           }
 
           // Wait before next poll
@@ -722,12 +733,12 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
                 if (lock) {
                   await acquireConcurrency();
                   processMessage(msg, lock.lockToken).catch((err) => {
-                    console.error('[mongodb-world] Error processing message:', err);
+                    debug('Error processing message:', err);
                   });
                 }
               }
             } catch (err) {
-              console.error('[mongodb-world] Scheduled poll error:', err);
+              debug('Scheduled poll error:', err);
             }
 
             await sleep(pollIntervalMs).catch(() => {});
@@ -748,7 +759,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
             if (lock) {
               await acquireConcurrency();
               processMessage(doc, lock.lockToken).catch((err) => {
-                console.error('[mongodb-world] Error processing message:', err);
+                debug('Error processing message:', err);
               });
             }
           }
@@ -767,6 +778,11 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
    * Create the appropriate watcher based on MongoDB capabilities.
    */
   async function createWatcher(): Promise<Watcher> {
+    if (!useChangeStreams) {
+      debug('Change Streams disabled via config/env - using polling mode');
+      return createPollingWatcher();
+    }
+
     const supportsChangeStreams = await detectChangeStreamSupport(messagesCollection);
 
     if (supportsChangeStreams) {
@@ -908,7 +924,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
 
           return Response.json({ ok: true });
         } catch (error) {
-          console.error('[mongodb-world] Handler error:', error);
+          debug('Handler error:', error);
           return Response.json(String(error), { status: 500 });
         }
       };
@@ -939,7 +955,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
       // Start periodic recovery
       state.recoveryInterval = setInterval(() => {
         recoverStuckMessages().catch((err) => {
-          console.error('[mongodb-world] Recovery error:', err);
+          debug('Recovery error:', err);
         });
       }, STUCK_RECOVERY_INTERVAL_MS);
 
@@ -947,7 +963,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
       state.watcher = await createWatcher();
       state.watcher.start().catch((err) => {
         if (!state.isShuttingDown) {
-          console.error('[mongodb-world] Watcher error:', err);
+          debug('Watcher error:', err);
         }
       });
 

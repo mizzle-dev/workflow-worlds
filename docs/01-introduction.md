@@ -1,5 +1,7 @@
 # Introduction to Worlds
 
+> **Workflow 4.1 note:** Runtime state transitions are event-sourced through `storage.events.create(...)`. See [07 - Workflow 4.1 Migration Guide](./07-workflow-4.1-migration.md) for upgrade-specific behavior.
+
 ## What is a World?
 
 A **World** is the interface that abstracts how workflows communicate with the outside world. It provides three core capabilities:
@@ -89,6 +91,7 @@ The Streamer provides real-time I/O:
 | `writeToStream()` | Writes a chunk to a named stream |
 | `closeStream()` | Signals end of stream |
 | `readFromStream()` | Returns a ReadableStream for consuming output |
+| `listStreamsByRunId()` | Lists stream names produced by a run |
 
 ## Execution Flow
 
@@ -97,22 +100,22 @@ Understanding the execution flow helps you implement a World correctly:
 ### 1. Workflow Invocation
 
 ```
-Client → start() API → World.runs.create() → World.queue() → Queue Handler
+Client → start() API → World.events.create(run_created) → World.queue() → Queue Handler
 ```
 
 1. Client calls `start()` to begin a workflow
-2. Runtime creates a run record via `storage.runs.create()`
+2. Runtime creates a run via `storage.events.create(null, { eventType: 'run_created', ... })`
 3. Runtime queues a workflow invocation message
 4. Queue handler picks up the message and executes the workflow
 
 ### 2. Step Execution
 
 ```
-Workflow → step() call → World.steps.create() → World.events.create() → World.queue()
+Workflow → step() call → World.events.create(step_created) → World.events.create(step_started) → World.queue()
 ```
 
 1. Workflow calls a step function
-2. Runtime creates a step record via `storage.steps.create()`
+2. Runtime creates a step via `storage.events.create(runId, { eventType: 'step_created', ... })`
 3. Runtime logs a `step_started` event
 4. Runtime queues a step invocation message
 5. Step handler executes and updates step status
@@ -174,9 +177,9 @@ Optimized for Vercel's serverless platform:
 All implementations use ULIDs (Universally Unique Lexicographically Sortable Identifiers) with prefixes:
 
 - `wrun_` - Workflow runs
-- `wstep_` or `step_` - Steps
-- `wevt_` or `evnt_` - Events
-- `whook_` - Hooks
+- `step_` - Steps
+- `evnt_` - Events
+- `hook_` - Hooks
 - `msg_` - Queue messages
 - `strm_` or `chnk_` - Stream chunks
 
@@ -192,7 +195,6 @@ ULIDs provide:
 pending → running → completed
                   → failed
                   → cancelled
-         → paused → running (resume)
 ```
 
 **Step Status:**
@@ -207,9 +209,9 @@ pending → running → completed
 The events table is the source of truth for replay. Event types include:
 
 - `step_started` / `step_completed` / `step_failed` / `step_retrying`
+- `run_created` / `run_started` / `run_completed` / `run_failed` / `run_cancelled`
 - `hook_created` / `hook_received` / `hook_disposed`
 - `wait_created` / `wait_completed`
-- `workflow_started` / `workflow_completed` / `workflow_failed`
 
 ### Correlation IDs
 

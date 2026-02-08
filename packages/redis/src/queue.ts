@@ -161,7 +161,7 @@ export async function createQueue(options: {
         // Non-retriable error
         throw new Error(`HTTP ${response.status}: ${text}`);
       } catch (err) {
-        console.error(`[redis-world] Job ${job.id} failed:`, err);
+        debug(`Job ${job.id} failed:`, err);
         throw err;
       }
     };
@@ -209,7 +209,7 @@ export async function createQueue(options: {
         return { messageId: (job?.id ?? messageId) as MessageId };
       } catch (err) {
         // BullMQ may throw if job is deduplicated - still return the messageId
-        console.error('[redis-world] Queue add error:', err);
+        debug('Queue add error:', err);
         return { messageId };
       }
     },
@@ -261,7 +261,7 @@ export async function createQueue(options: {
 
           return Response.json({ ok: true });
         } catch (error) {
-          console.error('[redis-world] Handler error:', error);
+          debug('Handler error:', error);
           return Response.json({ error: String(error) }, { status: 500 });
         }
       };
@@ -291,11 +291,11 @@ export async function createQueue(options: {
 
     // Set up error handlers
     workflowWorker.on('error', (err) => {
-      console.error('[redis-world] Workflow worker error:', err);
+      debug('Workflow worker error:', err);
     });
 
     stepWorker.on('error', (err) => {
-      console.error('[redis-world] Step worker error:', err);
+      debug('Step worker error:', err);
     });
 
     // Wait for workers to be ready

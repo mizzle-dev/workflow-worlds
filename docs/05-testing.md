@@ -313,7 +313,7 @@ createTestSuite('./dist/index.js');
 
 #### 1. "Run not found" errors
 
-Your `storage.runs.create()` might not be storing correctly, or `storage.runs.get()` isn't finding the run.
+For Workflow 4.1, your `storage.events.create()` path (especially `run_created`) may not be creating run state correctly, or `storage.runs.get()` isn't finding the run.
 
 **Debug:**
 ```typescript

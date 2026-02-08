@@ -23,7 +23,25 @@
  */
 
 import { createClient, type Client } from '@libsql/client';
-import type { World } from '@workflow/world';
+import type {
+  CreateEventParams,
+  CreateEventRequest,
+  Event,
+  EventResult,
+  GetStepParams,
+  GetWorkflowRunParams,
+  ListEventsByCorrelationIdParams,
+  ListEventsParams,
+  ListWorkflowRunStepsParams,
+  ListWorkflowRunsParams,
+  PaginatedResponse,
+  RunCreatedEventRequest,
+  Step,
+  StepWithoutData,
+  World,
+  WorkflowRun,
+  WorkflowRunWithoutData,
+} from '@workflow/world';
 import { createQueue } from './queue.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
@@ -163,90 +181,143 @@ export function createWorld(config: TursoWorldConfig = {}): World {
     return initPromise;
   }
 
+  async function getRun(
+    id: string,
+    params: GetWorkflowRunParams & { resolveData: 'none' }
+  ): Promise<WorkflowRunWithoutData>;
+  async function getRun(
+    id: string,
+    params?: GetWorkflowRunParams & { resolveData?: 'all' }
+  ): Promise<WorkflowRun>;
+  async function getRun(
+    id: string,
+    params?: GetWorkflowRunParams
+  ): Promise<WorkflowRun | WorkflowRunWithoutData> {
+    const { storage } = await ensureInitialized();
+    return storage.runs.get(id, params);
+  }
+
+  async function listRuns(
+    params: ListWorkflowRunsParams & { resolveData: 'none' }
+  ): Promise<PaginatedResponse<WorkflowRunWithoutData>>;
+  async function listRuns(
+    params?: ListWorkflowRunsParams & { resolveData?: 'all' }
+  ): Promise<PaginatedResponse<WorkflowRun>>;
+  async function listRuns(
+    params?: ListWorkflowRunsParams
+  ): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>> {
+    const { storage } = await ensureInitialized();
+    return storage.runs.list(params);
+  }
+
+  async function getStep(
+    runId: string | undefined,
+    stepId: string,
+    params: GetStepParams & { resolveData: 'none' }
+  ): Promise<StepWithoutData>;
+  async function getStep(
+    runId: string | undefined,
+    stepId: string,
+    params?: GetStepParams & { resolveData?: 'all' }
+  ): Promise<Step>;
+  async function getStep(
+    runId: string | undefined,
+    stepId: string,
+    params?: GetStepParams
+  ): Promise<Step | StepWithoutData> {
+    const { storage } = await ensureInitialized();
+    return storage.steps.get(runId, stepId, params);
+  }
+
+  async function listSteps(
+    params: ListWorkflowRunStepsParams & { resolveData: 'none' }
+  ): Promise<PaginatedResponse<StepWithoutData>>;
+  async function listSteps(
+    params: ListWorkflowRunStepsParams & { resolveData?: 'all' }
+  ): Promise<PaginatedResponse<Step>>;
+  async function listSteps(
+    params: ListWorkflowRunStepsParams
+  ): Promise<PaginatedResponse<Step | StepWithoutData>> {
+    const { storage } = await ensureInitialized();
+    return storage.steps.list(params);
+  }
+
+  async function createEvent(
+    runId: null,
+    data: RunCreatedEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult>;
+  async function createEvent(
+    runId: string,
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult>;
+  async function createEvent(
+    runId: string | null,
+    data: RunCreatedEventRequest | CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> {
+    const { storage } = await ensureInitialized();
+
+    if (runId === null) {
+      if (data.eventType !== 'run_created') {
+        throw new Error('runId must be a string for non run_created events');
+      }
+      return storage.events.create(null, data, params);
+    }
+
+    if (data.eventType === 'run_created') {
+      throw new Error('runId must be null for run_created events');
+    }
+
+    return storage.events.create(runId, data, params);
+  }
+
+  async function listEvents(
+    params: ListEventsParams
+  ): Promise<PaginatedResponse<Event>> {
+    const { storage } = await ensureInitialized();
+    return storage.events.list(params);
+  }
+
+  async function listEventsByCorrelationId(
+    params: ListEventsByCorrelationIdParams
+  ): Promise<PaginatedResponse<Event>> {
+    const { storage } = await ensureInitialized();
+    return storage.events.listByCorrelationId(params);
+  }
+
   // Return a World with lazy initialization
   return {
     // =========================================================================
     // RUNS
     // =========================================================================
     runs: {
-      async create(data) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.create(data);
-      },
-      async get(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.get(id, params);
-      },
-      async update(id, data) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.update(id, data);
-      },
-      async list(params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.list(params);
-      },
-      async cancel(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.cancel(id, params);
-      },
-      async pause(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.pause(id, params);
-      },
-      async resume(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.resume(id, params);
-      },
+      get: getRun,
+      list: listRuns,
     },
 
     // =========================================================================
     // STEPS
     // =========================================================================
     steps: {
-      async create(runId, data) {
-        const { storage } = await ensureInitialized();
-        return storage.steps.create(runId, data);
-      },
-      async get(runId, stepId, params) {
-        const { storage } = await ensureInitialized();
-        return storage.steps.get(runId, stepId, params);
-      },
-      async update(runId, stepId, data) {
-        const { storage } = await ensureInitialized();
-        return storage.steps.update(runId, stepId, data);
-      },
-      async list(params) {
-        const { storage } = await ensureInitialized();
-        return storage.steps.list(params);
-      },
+      get: getStep,
+      list: listSteps,
     },
 
     // =========================================================================
     // EVENTS
     // =========================================================================
     events: {
-      async create(runId, data, params) {
-        const { storage } = await ensureInitialized();
-        return storage.events.create(runId, data, params);
-      },
-      async list(params) {
-        const { storage } = await ensureInitialized();
-        return storage.events.list(params);
-      },
-      async listByCorrelationId(params) {
-        const { storage } = await ensureInitialized();
-        return storage.events.listByCorrelationId(params);
-      },
+      create: createEvent,
+      list: listEvents,
+      listByCorrelationId: listEventsByCorrelationId,
     },
 
     // =========================================================================
     // HOOKS
     // =========================================================================
     hooks: {
-      async create(runId, data, params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.create(runId, data, params);
-      },
       async get(hookId, params) {
         const { storage } = await ensureInitialized();
         return storage.hooks.get(hookId, params);
@@ -258,10 +329,6 @@ export function createWorld(config: TursoWorldConfig = {}): World {
       async list(params) {
         const { storage } = await ensureInitialized();
         return storage.hooks.list(params);
-      },
-      async dispose(hookId, params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.dispose(hookId, params);
       },
     },
 
@@ -290,7 +357,11 @@ export function createWorld(config: TursoWorldConfig = {}): World {
           const { queue } = await ensureInitialized();
           queueHandler = queue.createQueueHandler(prefix, handler);
         }
-        return queueHandler(req);
+        const activeHandler = queueHandler;
+        if (!activeHandler) {
+          throw new Error('Queue handler failed to initialize');
+        }
+        return activeHandler(req);
       };
     },
 
@@ -310,6 +381,11 @@ export function createWorld(config: TursoWorldConfig = {}): World {
     async readFromStream(name, startIndex) {
       const { streamer } = await ensureInitialized();
       return streamer.readFromStream(name, startIndex);
+    },
+
+    async listStreamsByRunId(runId) {
+      const { streamer } = await ensureInitialized();
+      return streamer.listStreamsByRunId(runId);
     },
 
     // =========================================================================

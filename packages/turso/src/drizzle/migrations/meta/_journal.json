@@ -8,6 +8,20 @@
       "when": 1764715828986,
       "tag": "0000_skinny_ikaris",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1770499353289,
+      "tag": "0001_cute_captain_flint",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1770600000000,
+      "tag": "0002_add_step_retry_after",
+      "breakpoints": true
     }
   ]
 }

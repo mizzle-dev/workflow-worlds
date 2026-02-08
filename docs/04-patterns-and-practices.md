@@ -23,9 +23,9 @@ const generateUlid = monotonicFactory();
 
 // Generate IDs with prefixes for type identification
 const runId = `wrun_${generateUlid()}`;     // Workflow run
-const stepId = `wstep_${generateUlid()}`;   // Step
-const eventId = `wevt_${generateUlid()}`;   // Event
-const hookId = `whook_${generateUlid()}`;   // Hook
+const stepId = `step_${generateUlid()}`;    // Step
+const eventId = `evnt_${generateUlid()}`;   // Event
+const hookId = `hook_${generateUlid()}`;    // Hook
 const messageId = `msg_${generateUlid()}`;  // Queue message
 const chunkId = `chnk_${generateUlid()}`;   // Stream chunk
 ```
@@ -40,8 +40,8 @@ function ulidToDate(ulid: string): Date {
 }
 
 // Usage
-const eventId = 'wevt_01HX7K8J4Q5R6S7T8U9V0W1X2Y';
-const ulid = eventId.replace(/^wevt_/, '');
+const eventId = 'evnt_01HX7K8J4Q5R6S7T8U9V0W1X2Y';
+const ulid = eventId.replace(/^evnt_/, '');
 const createdAt = ulidToDate(ulid);
 ```
 
@@ -504,11 +504,6 @@ Valid status transitions for workflows and steps.
                     ├────────▶ failed
                     │
                     ├────────▶ cancelled
-                    │
-                    ▼
-               ┌─────────┐
-               │ paused  │──── resume ────▶ running
-               └─────────┘
 ```
 
 ### Validation
@@ -516,8 +511,7 @@ Valid status transitions for workflows and steps.
 ```typescript
 const validTransitions: Record<WorkflowRunStatus, WorkflowRunStatus[]> = {
   pending: ['running', 'cancelled'],
-  running: ['completed', 'failed', 'paused', 'cancelled'],
-  paused: ['running', 'cancelled'],
+  running: ['completed', 'failed', 'cancelled'],
   completed: [], // Terminal
   failed: [],    // Terminal
   cancelled: [], // Terminal
@@ -558,7 +552,11 @@ async function updateRun(id: string, data: UpdateRequest) {
 async function deleteHooksForRun(runId: string) {
   const hooks = await storage.hooks.list({ runId });
   for (const hook of hooks.data) {
-    await storage.hooks.dispose(hook.hookId);
+    await storage.events.create(runId, {
+      eventType: 'hook_disposed',
+      correlationId: hook.hookId,
+      specVersion: 2,
+    });
   }
 }
 ```

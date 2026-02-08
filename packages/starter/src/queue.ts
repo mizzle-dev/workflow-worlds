@@ -175,18 +175,18 @@ export function createQueue(config: QueueConfig = {}): {
             }
           }
 
-          console.error('[starter-world] Message processing failed:', {
+          debug('Message processing failed:', {
             queueName: msg.queueName,
             status: response.status,
             text,
           });
         } catch (err) {
           // Network error, retry
-          console.error('[starter-world] Network error:', err);
+          debug('Network error:', err);
         }
       }
 
-      console.error('[starter-world] Max retries reached for:', msg.queueName);
+      debug('Max retries reached for:', msg.queueName);
     } finally {
       releaseConcurrency();
     }
@@ -343,7 +343,7 @@ export function createQueue(config: QueueConfig = {}): {
 
           return Response.json({ ok: true });
         } catch (error) {
-          console.error('[starter-world] Handler error:', error);
+          debug('Handler error:', error);
           return Response.json(String(error), { status: 500 });
         }
       };

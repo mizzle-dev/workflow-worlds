@@ -40,6 +40,7 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
   // In-memory storage for stream chunks
   // TODO: Replace with your database/storage
   const streams = new Map<string, StreamChunk[]>();
+  const streamNamesByRun = new Map<string, Set<string>>();
 
   // Event emitter for real-time notifications
   // TODO: For multi-process, use pub/sub (Redis, PostgreSQL LISTEN/NOTIFY, etc.)
@@ -50,6 +51,15 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
 
   // Increase listener limit for high-concurrency scenarios
   emitter.setMaxListeners(100);
+
+  function registerStream(runId: string, streamName: string): void {
+    let streamNames = streamNamesByRun.get(runId);
+    if (!streamNames) {
+      streamNames = new Set<string>();
+      streamNamesByRun.set(runId, streamNames);
+    }
+    streamNames.add(streamName);
+  }
 
   return {
     /**
@@ -66,7 +76,8 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
       chunk: string | Uint8Array
     ): Promise<void> {
       // Await runId if it's a promise (ensures proper ordering)
-      await runId;
+      const resolvedRunId = await runId;
+      registerStream(resolvedRunId, name);
 
       const chunkId = `chnk_${generateUlid()}`;
 
@@ -105,7 +116,8 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
       name: string,
       runId: string | Promise<string>
     ): Promise<void> {
-      await runId;
+      const resolvedRunId = await runId;
+      registerStream(resolvedRunId, name);
 
       const chunkId = `chnk_${generateUlid()}`;
       const streamChunk: StreamChunk = {
@@ -124,6 +136,10 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
       // Notify subscribers that stream is closed
       // TODO: Publish close event to your pub/sub system
       emitter.emit(`close:${name}`);
+    },
+
+    async listStreamsByRunId(runId: string): Promise<string[]> {
+      return Array.from(streamNamesByRun.get(runId) ?? []);
     },
 
     /**

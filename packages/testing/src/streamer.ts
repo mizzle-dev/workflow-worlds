@@ -160,6 +160,37 @@ export function streamerTests(options: StreamerTestOptions) {
         expect(result1).toBe('stream 1 data');
         expect(result2).toBe('stream 2 data');
       });
+
+      test('lists stream names by runId', async () => {
+        const baseId = Date.now();
+        const runId = `wrun_test-${baseId}`;
+        const otherRunId = `wrun_test-${baseId}-other`;
+        const stream1 = `test-list-1-${baseId}`;
+        const stream2 = `test-list-2-${baseId}`;
+        const otherStream = `test-list-other-${baseId}`;
+
+        await streamer.writeToStream(stream1, runId, new TextEncoder().encode('a'));
+        await streamer.writeToStream(stream1, runId, new TextEncoder().encode('b'));
+        await streamer.writeToStream(stream2, runId, new TextEncoder().encode('c'));
+        await streamer.writeToStream(otherStream, otherRunId, new TextEncoder().encode('d'));
+        await streamer.closeStream(stream1, runId);
+        await streamer.closeStream(stream2, runId);
+        await streamer.closeStream(otherStream, otherRunId);
+
+        const runStreams = await streamer.listStreamsByRunId(runId);
+        const runStreamSet = new Set(runStreams);
+
+        expect(runStreamSet.has(stream1)).toBe(true);
+        expect(runStreamSet.has(stream2)).toBe(true);
+        expect(runStreamSet.has(otherStream)).toBe(false);
+
+        const stream1Count = runStreams.filter((name) => name === stream1).length;
+        expect(stream1Count).toBe(1);
+
+        const unknownRunStreams = await streamer.listStreamsByRunId(`missing-${baseId}`);
+        expect(Array.isArray(unknownRunStreams)).toBe(true);
+        expect(unknownRunStreams).toHaveLength(0);
+      });
     });
 
     describe('JSON data in streams', () => {

@@ -118,33 +118,13 @@ export function createWorld(config: MongoDBWorldConfig = {}): World {
     // RUNS STORAGE
     // =========================================================================
     runs: {
-      async create(data) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.create(data);
-      },
       async get(id, params) {
         const { storage } = await ensureInitialized();
         return storage.runs.get(id, params);
       },
-      async update(id, data) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.update(id, data);
-      },
       async list(params) {
         const { storage } = await ensureInitialized();
         return storage.runs.list(params);
-      },
-      async cancel(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.cancel(id, params);
-      },
-      async pause(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.pause(id, params);
-      },
-      async resume(id, params) {
-        const { storage } = await ensureInitialized();
-        return storage.runs.resume(id, params);
       },
     },
 
@@ -152,17 +132,9 @@ export function createWorld(config: MongoDBWorldConfig = {}): World {
     // STEPS STORAGE
     // =========================================================================
     steps: {
-      async create(runId, data) {
-        const { storage } = await ensureInitialized();
-        return storage.steps.create(runId, data);
-      },
       async get(runId, stepId, params) {
         const { storage } = await ensureInitialized();
         return storage.steps.get(runId, stepId, params);
-      },
-      async update(runId, stepId, data) {
-        const { storage } = await ensureInitialized();
-        return storage.steps.update(runId, stepId, data);
       },
       async list(params) {
         const { storage } = await ensureInitialized();
@@ -192,10 +164,6 @@ export function createWorld(config: MongoDBWorldConfig = {}): World {
     // HOOKS STORAGE
     // =========================================================================
     hooks: {
-      async create(runId, data, params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.create(runId, data, params);
-      },
       async get(hookId, params) {
         const { storage } = await ensureInitialized();
         return storage.hooks.get(hookId, params);
@@ -207,10 +175,6 @@ export function createWorld(config: MongoDBWorldConfig = {}): World {
       async list(params) {
         const { storage } = await ensureInitialized();
         return storage.hooks.list(params);
-      },
-      async dispose(hookId, params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.dispose(hookId, params);
       },
     },
 
@@ -253,6 +217,11 @@ export function createWorld(config: MongoDBWorldConfig = {}): World {
     async readFromStream(name, startIndex) {
       const { streamer } = await ensureInitialized();
       return streamer.readFromStream(name, startIndex);
+    },
+
+    async listStreamsByRunId(runId) {
+      const { streamer } = await ensureInitialized();
+      return streamer.listStreamsByRunId(runId);
     },
 
     /**
