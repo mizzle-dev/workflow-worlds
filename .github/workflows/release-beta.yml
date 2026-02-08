@@ -21,6 +21,7 @@ jobs:
     environment: publish
     permissions:
       contents: read
+      pull-requests: read
       id-token: write
 
     services:
@@ -78,6 +79,8 @@ jobs:
 
       - name: Prepare snapshot versions
         run: pnpm changeset version --snapshot ${{ github.event.inputs.snapshot-tag || 'beta' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish beta packages
         run: pnpm changeset publish --tag ${{ github.event.inputs.snapshot-tag || 'beta' }}
