@@ -385,6 +385,7 @@ jobs:
 
       - name: Download all results
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           pattern: e2e-results-*
           path: e2e-results
@@ -393,6 +394,7 @@ jobs:
       - name: Generate summary
         id: summary
         run: |
+          mkdir -p e2e-results
           node scripts/aggregate-e2e-results.js e2e-results \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             >> "$GITHUB_STEP_SUMMARY" || true
@@ -403,3 +405,7 @@ jobs:
         with:
           header: e2e-test-results
           path: e2e-results/e2e-summary.md
+          message: |
+            ## ❌ E2E Test Results
+
+            E2E jobs failed before producing test results. [View workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
