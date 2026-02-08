@@ -427,12 +427,7 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
 
         let effectiveRunId: string;
         if (data.eventType === 'run_created') {
-          if (runId !== null) {
-            throw new WorkflowAPIError('runId must be null for run_created events', {
-              status: 400,
-            });
-          }
-          effectiveRunId = `wrun_${generateUlid()}`;
+          effectiveRunId = runId ?? `wrun_${generateUlid()}`;
         } else {
           if (!runId) {
             throw new WorkflowAPIError('runId is required for non run_created events', {

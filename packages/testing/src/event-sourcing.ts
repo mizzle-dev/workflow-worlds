@@ -95,23 +95,22 @@ export function eventSourcingTests(options: EventSourcingTestOptions) {
     });
 
     describe('create contract guards', () => {
-      test('requires runId=null for run_created', async () => {
-        await expectErrorStatus(
-          storage.events.create(
-            'wrun_invalid' as unknown as null,
-            {
-              eventType: 'run_created',
-              specVersion: SPEC_VERSION_CURRENT,
-              eventData: {
-                deploymentId: 'test-deployment',
-                workflowName: 'invalid-run-create',
-                input: [],
-              },
-            } satisfies RunCreatedEventRequest
-          ),
-          400,
-          /runId must be null/i
+      test('accepts client-provided runId for run_created', async () => {
+        const clientRunId = 'wrun_client_provided_id';
+        const result = await storage.events.create(
+          clientRunId as unknown as null,
+          {
+            eventType: 'run_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              deploymentId: 'test-deployment',
+              workflowName: 'client-runid-test',
+              input: [],
+            },
+          } satisfies RunCreatedEventRequest
         );
+        expect(result.run).toBeDefined();
+        expect(result.run!.runId).toBe(clientRunId);
       });
 
       test('requires runId for non run_created events', async () => {

@@ -54,7 +54,7 @@ type ResolveDataParams = { resolveData?: 'none' | 'all' };
 type LegacyStorage = {
   runs: {
     create(
-      data: CreateWorkflowRunRequest & { specVersion?: number }
+      data: CreateWorkflowRunRequest & { specVersion?: number; runId?: string }
     ): Promise<WorkflowRun>;
     get(id: string, params?: ResolveDataParams): Promise<WorkflowRun>;
     update(id: string, data: UpdateWorkflowRunRequest): Promise<WorkflowRun>;
@@ -196,8 +196,8 @@ export async function createStorage(options: {
     // RUNS STORAGE
     // =========================================================================
     runs: {
-      async create(data: CreateWorkflowRunRequest): Promise<WorkflowRun> {
-        const runId = `wrun_${generateUlid()}`;
+      async create(data: CreateWorkflowRunRequest & { specVersion?: number; runId?: string }): Promise<WorkflowRun> {
+        const runId = data.runId ?? `wrun_${generateUlid()}`;
         const now = new Date();
         const score = ulidToScore(runId);
 
@@ -899,14 +899,8 @@ export async function createStorage(options: {
         const specVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
 
         if (data.eventType === 'run_created') {
-          if (runId !== null) {
-            throw new WorkflowAPIError(
-              'runId must be null for run_created events',
-              { status: 400 }
-            );
-          }
-
           const run = await legacyStorage.runs.create({
+            runId: runId ?? undefined,
             deploymentId: data.eventData.deploymentId,
             workflowName: data.eventData.workflowName,
             input: data.eventData.input,
