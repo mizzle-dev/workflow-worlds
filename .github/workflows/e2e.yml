@@ -194,19 +194,26 @@ jobs:
             "generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js",
             "apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}
         run: |
-          cd workbench/${{ env.APP_NAME }} && pnpm dev &
+          cd workbench/${{ env.APP_NAME }} && pnpm dev > ../../server-turso.log 2>&1 &
           echo "Waiting for dev server..." && sleep 15
           pnpm vitest run packages/core/e2e/e2e.test.ts \
             --reporter=default --reporter=json \
             --outputFile=e2e-turso.json || EXIT_CODE=$?
           exit ${EXIT_CODE:-0}
 
+      - name: Show server logs on failure
+        if: failure()
+        working-directory: .upstream
+        run: echo "=== Dev server logs ===" && tail -200 server-turso.log || true
+
       - name: Upload results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: e2e-results-turso
-          path: .upstream/e2e-turso.json
+          path: |
+            .upstream/e2e-turso.json
+            .upstream/server-turso.log
           retention-days: 7
           if-no-files-found: ignore
 
@@ -287,19 +294,26 @@ jobs:
             "generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js",
             "apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}
         run: |
-          cd workbench/${{ env.APP_NAME }} && pnpm dev &
+          cd workbench/${{ env.APP_NAME }} && pnpm dev > ../../server-mongodb.log 2>&1 &
           echo "Waiting for dev server..." && sleep 15
           pnpm vitest run packages/core/e2e/e2e.test.ts \
             --reporter=default --reporter=json \
             --outputFile=e2e-mongodb.json || EXIT_CODE=$?
           exit ${EXIT_CODE:-0}
 
+      - name: Show server logs on failure
+        if: failure()
+        working-directory: .upstream
+        run: echo "=== Dev server logs ===" && tail -200 server-mongodb.log || true
+
       - name: Upload results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: e2e-results-mongodb
-          path: .upstream/e2e-mongodb.json
+          path: |
+            .upstream/e2e-mongodb.json
+            .upstream/server-mongodb.log
           retention-days: 7
           if-no-files-found: ignore
 
@@ -379,19 +393,26 @@ jobs:
             "generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js",
             "apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}
         run: |
-          cd workbench/${{ env.APP_NAME }} && pnpm dev &
+          cd workbench/${{ env.APP_NAME }} && pnpm dev > ../../server-redis.log 2>&1 &
           echo "Waiting for dev server..." && sleep 15
           pnpm vitest run packages/core/e2e/e2e.test.ts \
             --reporter=default --reporter=json \
             --outputFile=e2e-redis.json || EXIT_CODE=$?
           exit ${EXIT_CODE:-0}
 
+      - name: Show server logs on failure
+        if: failure()
+        working-directory: .upstream
+        run: echo "=== Dev server logs ===" && tail -200 server-redis.log || true
+
       - name: Upload results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: e2e-results-redis
-          path: .upstream/e2e-redis.json
+          path: |
+            .upstream/e2e-redis.json
+            .upstream/server-redis.log
           retention-days: 7
           if-no-files-found: ignore
 
