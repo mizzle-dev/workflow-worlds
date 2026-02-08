@@ -3,8 +3,8 @@
 # our local (unpublished) builds instead of the npm-published packages.
 #
 # Architecture:
-#   build job  → builds local packages + upstream (cached by commit SHA)
-#   e2e-* jobs → restore upstream from cache, install world tarball, run tests
+#   build job  → builds local packages + upstream, shares both via actions/cache
+#   e2e-* jobs → restore caches, install world tarball, run tests
 
 name: E2E Tests
 
@@ -35,7 +35,7 @@ env:
 
 jobs:
   # ============================================================
-  # Build local packages + upstream (cached)
+  # Build local packages + upstream (both cached)
   # ============================================================
   build:
     name: Build
@@ -43,6 +43,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       upstream-cache-key: ${{ steps.upstream-meta.outputs.cache-key }}
+      tarball-cache-key: ${{ steps.tarball-meta.outputs.cache-key }}
     steps:
       # --- Build local world packages ---
       - uses: actions/checkout@v4
@@ -67,12 +68,15 @@ jobs:
           ls -lh .tarballs/
           echo "::endgroup::"
 
-      - name: Upload tarballs
-        uses: actions/upload-artifact@v4
+      - name: Tarball metadata
+        id: tarball-meta
+        run: echo "cache-key=tarballs-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache tarballs
+        uses: actions/cache@v4
         with:
-          name: world-tarballs
-          path: .tarballs/
-          retention-days: 1
+          path: .tarballs
+          key: ${{ steps.tarball-meta.outputs.cache-key }}
 
       # --- Build upstream (with cache) ---
       - name: Clone upstream
@@ -127,6 +131,13 @@ jobs:
           key: ${{ needs.build.outputs.upstream-cache-key }}
           fail-on-cache-miss: true
 
+      - name: Restore tarballs
+        uses: actions/cache/restore@v4
+        with:
+          path: .tarballs
+          key: ${{ needs.build.outputs.tarball-cache-key }}
+          fail-on-cache-miss: true
+
       - uses: pnpm/action-setup@v4
         with:
           version: '10.14.0'
@@ -134,12 +145,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Download tarballs
-        uses: actions/download-artifact@v4
-        with:
-          name: world-tarballs
-          path: .tarballs
 
       - name: Install turso world
         working-directory: .upstream
@@ -218,6 +223,13 @@ jobs:
           key: ${{ needs.build.outputs.upstream-cache-key }}
           fail-on-cache-miss: true
 
+      - name: Restore tarballs
+        uses: actions/cache/restore@v4
+        with:
+          path: .tarballs
+          key: ${{ needs.build.outputs.tarball-cache-key }}
+          fail-on-cache-miss: true
+
       - uses: pnpm/action-setup@v4
         with:
           version: '10.14.0'
@@ -225,12 +237,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Download tarballs
-        uses: actions/download-artifact@v4
-        with:
-          name: world-tarballs
-          path: .tarballs
 
       - name: Install mongodb world
         working-directory: .upstream
@@ -304,6 +310,13 @@ jobs:
           key: ${{ needs.build.outputs.upstream-cache-key }}
           fail-on-cache-miss: true
 
+      - name: Restore tarballs
+        uses: actions/cache/restore@v4
+        with:
+          path: .tarballs
+          key: ${{ needs.build.outputs.tarball-cache-key }}
+          fail-on-cache-miss: true
+
       - uses: pnpm/action-setup@v4
         with:
           version: '10.14.0'
@@ -311,12 +324,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Download tarballs
-        uses: actions/download-artifact@v4
-        with:
-          name: world-tarballs
-          path: .tarballs
 
       - name: Install redis world
         working-directory: .upstream
