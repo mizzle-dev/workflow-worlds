@@ -504,11 +504,6 @@ Valid status transitions for workflows and steps.
                     ├────────▶ failed
                     │
                     ├────────▶ cancelled
-                    │
-                    ▼
-               ┌─────────┐
-               │ paused  │──── resume ────▶ running
-               └─────────┘
 ```
 
 ### Validation
@@ -516,8 +511,7 @@ Valid status transitions for workflows and steps.
 ```typescript
 const validTransitions: Record<WorkflowRunStatus, WorkflowRunStatus[]> = {
   pending: ['running', 'cancelled'],
-  running: ['completed', 'failed', 'paused', 'cancelled'],
-  paused: ['running', 'cancelled'],
+  running: ['completed', 'failed', 'cancelled'],
   completed: [], // Terminal
   failed: [],    // Terminal
   cancelled: [], // Terminal
@@ -558,7 +552,11 @@ async function updateRun(id: string, data: UpdateRequest) {
 async function deleteHooksForRun(runId: string) {
   const hooks = await storage.hooks.list({ runId });
   for (const hook of hooks.data) {
-    await storage.hooks.dispose(hook.hookId);
+    await storage.events.create(runId, {
+      eventType: 'hook_disposed',
+      correlationId: hook.hookId,
+      specVersion: 2,
+    });
   }
 }
 ```

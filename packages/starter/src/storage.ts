@@ -559,6 +559,17 @@ export function createStorage(): Storage {
           store.runs.set(run.runId, run);
           cleanupHooksForRun(store, run.runId);
         } else if (data.eventType === 'step_created') {
+          if (!data.correlationId) {
+            throw new WorkflowAPIError('Step events require correlationId', {
+              status: 400,
+            });
+          }
+          const existingStep = readStep(store, effectiveRunId, data.correlationId);
+          if (existingStep) {
+            throw new WorkflowAPIError(`Step '${data.correlationId}' already exists`, {
+              status: 409,
+            });
+          }
           step = {
             runId: effectiveRunId,
             stepId: data.correlationId,

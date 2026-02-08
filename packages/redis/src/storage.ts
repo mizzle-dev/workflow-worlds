@@ -1066,6 +1066,23 @@ export async function createStorage(options: {
                 { status: 400 }
               );
             }
+            try {
+              await legacyStorage.steps.get(runId, stepId, { resolveData: 'all' });
+              throw new WorkflowAPIError(`Step '${stepId}' already exists`, {
+                status: 409,
+              });
+            } catch (error) {
+              if (
+                error instanceof WorkflowAPIError &&
+                (error as { status?: number }).status === 404
+              ) {
+                // Step does not exist yet; continue with creation.
+              } else if (error instanceof WorkflowAPIError) {
+                throw error;
+              } else {
+                throw error;
+              }
+            }
             step = await legacyStorage.steps.create(runId, {
               stepId,
               stepName: data.eventData.stepName,

@@ -72,6 +72,15 @@ function isMongoBinaryLike(value: unknown): value is { _bsontype: string; value:
   );
 }
 
+function isMongoDuplicateKeyError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 11000
+  );
+}
+
 function stripUndefined<T>(doc: T): T {
   if (doc === null || doc === undefined) return doc;
   if (typeof doc !== 'object') return doc;
@@ -763,7 +772,29 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
             createdAt: now,
             specVersion: effectiveSpecVersion,
           };
-          await hooksCollection.insertOne(stripUndefined(hook) as HookDocument);
+          try {
+            await hooksCollection.insertOne(stripUndefined(hook) as HookDocument);
+          } catch (error) {
+            if (isMongoDuplicateKeyError(error)) {
+              const conflictEvent: Event = {
+                eventType: 'hook_conflict',
+                correlationId: data.correlationId,
+                eventData: { token: data.eventData.token },
+                runId: effectiveRunId,
+                eventId: `wevt_${generateUlid()}`,
+                createdAt: now,
+                specVersion: effectiveSpecVersion,
+              } as Event;
+              await eventsCollection.insertOne(stripUndefined(conflictEvent) as EventDocument);
+              return {
+                event: filterEventData(conflictEvent, resolveData),
+                run,
+                step,
+                hook: undefined,
+              };
+            }
+            throw error;
+          }
         } else if (data.eventType === 'hook_disposed') {
           if (data.correlationId) {
             await hooksCollection.deleteOne({ hookId: data.correlationId });

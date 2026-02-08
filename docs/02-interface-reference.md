@@ -150,41 +150,14 @@ export interface Storage {
 
 ### Storage.runs
 
-Manages workflow run records.
+Read-only run materialized view.
 
 ```typescript
 runs: {
-  create(data: CreateWorkflowRunRequest): Promise<WorkflowRun>;
   get(id: string, params?: GetWorkflowRunParams): Promise<WorkflowRun>;
-  update(id: string, data: UpdateWorkflowRunRequest): Promise<WorkflowRun>;
   list(params?: ListWorkflowRunsParams): Promise<PaginatedResponse<WorkflowRun>>;
-  cancel(id: string, params?: CancelWorkflowRunParams): Promise<WorkflowRun>;
-  pause(id: string, params?: PauseWorkflowRunParams): Promise<WorkflowRun>;
-  resume(id: string, params?: ResumeWorkflowRunParams): Promise<WorkflowRun>;
 }
 ```
-
-#### `runs.create()`
-
-Creates a new workflow run.
-
-**Parameters:**
-
-```typescript
-interface CreateWorkflowRunRequest {
-  deploymentId: string;          // From getDeploymentId()
-  workflowName: string;          // Name of the workflow function
-  input: SerializedData[];       // Serialized function arguments
-  executionContext?: SerializedData;  // Optional user context
-}
-```
-
-**Returns:** A `WorkflowRun` with status `'pending'`
-
-**Implementation notes:**
-- Generate a ULID-based `runId` (e.g., `wrun_01HX...`)
-- Set `createdAt` and `updatedAt` to current time
-- Initialize `status` as `'pending'`
 
 #### `runs.get()`
 
@@ -198,27 +171,6 @@ Retrieves a workflow run by ID.
 | `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data |
 
 **Returns:** The `WorkflowRun` or throws `WorkflowRunNotFoundError`
-
-#### `runs.update()`
-
-Updates a workflow run's state.
-
-**Parameters:**
-
-```typescript
-interface UpdateWorkflowRunRequest {
-  status?: WorkflowRunStatus;
-  output?: SerializedData;
-  error?: StructuredError;
-  executionContext?: Record<string, any>;
-}
-```
-
-**Implementation notes:**
-- Set `startedAt` only the first time status becomes `'running'`
-- Set `completedAt` when status becomes terminal (`'completed'`, `'failed'`, `'cancelled'`)
-- Update `updatedAt` on every change
-- Clean up associated hooks when transitioning to terminal status
 
 #### `runs.list()`
 
@@ -237,16 +189,14 @@ interface ListWorkflowRunsParams {
 
 **Returns:** `PaginatedResponse<WorkflowRun>`
 
-#### `runs.cancel()`, `runs.pause()`, `runs.resume()`
-
-Lifecycle methods that update status and return the updated run.
+`runs` does not expose mutators in Workflow 4.1. State changes are applied through `events.create(...)`.
 
 ### WorkflowRun Type
 
 ```typescript
 interface WorkflowRun {
   runId: string;                 // e.g., "wrun_01HX..."
-  status: WorkflowRunStatus;     // 'pending' | 'running' | 'completed' | 'failed' | 'paused' | 'cancelled'
+  status: WorkflowRunStatus;     // 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   deploymentId: string;
   workflowName: string;
   input: any[];                  // Function arguments
@@ -259,60 +209,27 @@ interface WorkflowRun {
   updatedAt: Date;
 }
 
-type WorkflowRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'paused' | 'cancelled';
+type WorkflowRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 ```
 
 ---
 
 ### Storage.steps
 
-Manages step execution records.
+Read-only step materialized view.
 
 ```typescript
 steps: {
-  create(runId: string, data: CreateStepRequest): Promise<Step>;
   get(runId: string | undefined, stepId: string, params?: GetStepParams): Promise<Step>;
-  update(runId: string, stepId: string, data: UpdateStepRequest): Promise<Step>;
   list(params: ListWorkflowRunStepsParams): Promise<PaginatedResponse<Step>>;
 }
 ```
-
-#### `steps.create()`
-
-Creates a new step execution record.
-
-```typescript
-interface CreateStepRequest {
-  stepId: string;    // Unique step identifier
-  stepName: string;  // Human-readable step name
-  input: SerializedData;  // Step function arguments
-}
-```
-
-**Returns:** A `Step` with status `'pending'` and `attempt: 0`
 
 #### `steps.get()`
 
 Retrieves a step by ID. Note that `runId` can be `undefined` - in this case, search across all runs to find the step.
 
-#### `steps.update()`
-
-Updates step state.
-
-```typescript
-interface UpdateStepRequest {
-  attempt?: number;
-  status?: StepStatus;
-  output?: SerializedData;
-  error?: StructuredError;
-  retryAfter?: Date;  // For retryable errors
-}
-```
-
-**Implementation notes:**
-- Set `startedAt` only the first time status becomes `'running'`
-- Set `completedAt` when status becomes `'completed'` or `'failed'`
-- Track `attempt` count for retries
+`steps` does not expose mutators in Workflow 4.1. Step lifecycle updates are driven by `events.create(...)`.
 
 ### Step Type
 
@@ -340,11 +257,12 @@ type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 ### Storage.events
 
-Manages the event log for workflow replay.
+Manages the append-only event log and all state mutations.
 
 ```typescript
 events: {
-  create(runId: string, data: CreateEventRequest, params?: CreateEventParams): Promise<Event>;
+  create(runId: null, data: RunCreatedEventRequest, params?: CreateEventParams): Promise<EventResult>;
+  create(runId: string, data: CreateEventRequest, params?: CreateEventParams): Promise<EventResult>;
   list(params: ListEventsParams): Promise<PaginatedResponse<Event>>;
   listByCorrelationId(params: ListEventsByCorrelationIdParams): Promise<PaginatedResponse<Event>>;
 }
@@ -352,27 +270,40 @@ events: {
 
 #### `events.create()`
 
-Creates a new event in the log.
+Creates an event and atomically applies the corresponding run/step/hook state transition.
 
 ```typescript
 type CreateEventRequest =
+  | { eventType: 'run_started' }
+  | { eventType: 'run_completed'; eventData: { output?: any } }
+  | { eventType: 'run_failed'; eventData: { error: any; errorCode?: string } }
+  | { eventType: 'run_cancelled' }
+  | { eventType: 'step_created'; correlationId: string; eventData: { stepName: string; input: any } }
   | { eventType: 'step_completed'; correlationId: string; eventData: { result: any } }
-  | { eventType: 'step_failed'; correlationId: string; eventData: { error: any; stack?: string; fatal?: boolean } }
-  | { eventType: 'step_started'; correlationId: string }
-  | { eventType: 'step_retrying'; correlationId: string; eventData: { attempt: number } }
-  | { eventType: 'hook_created'; correlationId: string }
+  | { eventType: 'step_failed'; correlationId: string; eventData: { error: any; stack?: string } }
+  | { eventType: 'step_started'; correlationId: string; eventData?: { attempt?: number } }
+  | { eventType: 'step_retrying'; correlationId: string; eventData: { error: any; stack?: string; retryAfter?: Date } }
+  | { eventType: 'hook_created'; correlationId: string; eventData: { token: string; metadata?: any } }
   | { eventType: 'hook_received'; correlationId: string; eventData: { payload: any } }
   | { eventType: 'hook_disposed'; correlationId: string }
   | { eventType: 'wait_created'; correlationId: string; eventData: { resumeAt: Date } }
-  | { eventType: 'wait_completed'; correlationId: string }
-  | { eventType: 'workflow_started' }
-  | { eventType: 'workflow_completed' }
-  | { eventType: 'workflow_failed'; eventData: { error: any } };
+  | { eventType: 'wait_completed'; correlationId: string };
+
+type RunCreatedEventRequest = {
+  eventType: 'run_created';
+  eventData: {
+    deploymentId: string;
+    workflowName: string;
+    input: any;
+    executionContext?: Record<string, any>;
+  };
+};
 ```
 
 **Implementation notes:**
-- Generate a ULID-based `eventId` (e.g., `wevt_01HX...`)
-- Store events in chronological order
+- `run_created` must be called with `runId = null`; world generates runId
+- World may return `hook_conflict` event for duplicate hook tokens
+- Legacy runs may return `event: undefined` for `run_cancelled`
 
 #### `events.list()`
 
@@ -405,51 +336,32 @@ interface Event {
 }
 
 type EventType =
-  | 'step_completed' | 'step_failed' | 'step_retrying' | 'step_started'
+  | 'run_created' | 'run_started' | 'run_completed' | 'run_failed' | 'run_cancelled'
+  | 'step_created' | 'step_completed' | 'step_failed' | 'step_retrying' | 'step_started'
   | 'hook_created' | 'hook_received' | 'hook_disposed'
   | 'wait_created' | 'wait_completed'
-  | 'workflow_completed' | 'workflow_failed' | 'workflow_started';
+  | 'hook_conflict';
 ```
 
 ---
 
 ### Storage.hooks
 
-Manages webhook/callback registrations.
+Read-only hook materialized view.
 
 ```typescript
 hooks: {
-  create(runId: string, data: CreateHookRequest, params?: GetHookParams): Promise<Hook>;
   get(hookId: string, params?: GetHookParams): Promise<Hook>;
   getByToken(token: string, params?: GetHookParams): Promise<Hook>;
   list(params: ListHooksParams): Promise<PaginatedResponse<Hook>>;
-  dispose(hookId: string, params?: GetHookParams): Promise<Hook>;
 }
 ```
-
-#### `hooks.create()`
-
-Creates a new hook registration.
-
-```typescript
-interface CreateHookRequest {
-  hookId: string;               // Unique hook identifier
-  token: string;                // Security token for resuming
-  metadata?: SerializedData;    // User-provided metadata
-}
-```
-
-**Implementation notes:**
-- Enforce token uniqueness (one token per project)
-- Set `ownerId`, `projectId`, `environment` based on your context
 
 #### `hooks.getByToken()`
 
 Retrieves a hook by its security token. Used when an external caller resumes a hook.
 
-#### `hooks.dispose()`
-
-Deletes a hook (called when hook is received or run completes).
+`hooks` creation/disposal is performed via `events.create(hook_created|hook_disposed|hook_received)`.
 
 ### Hook Type
 
@@ -489,6 +401,8 @@ export interface Streamer {
     name: string,
     startIndex?: number
   ): Promise<ReadableStream<Uint8Array>>;
+
+  listStreamsByRunId(runId: string): Promise<string[]>;
 }
 ```
 
