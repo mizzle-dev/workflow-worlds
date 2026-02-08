@@ -144,6 +144,14 @@ function filterHookData(hook: Hook, resolveData: 'none' | 'all' = 'all'): Hook {
   return cloned;
 }
 
+function isTerminalRunStatus(status: WorkflowRun['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
+function isTerminalStepStatus(status: Step['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
 type RunRow = typeof schema.runs.$inferSelect;
 type StepRow = typeof schema.steps.$inferSelect;
 type EventRow = typeof schema.events.$inferSelect;
@@ -844,6 +852,82 @@ export function createStorage(config: StorageConfig): Storage {
 
         if (isLegacySpecVersion(currentRun.specVersion)) {
           return handleLegacyEvent(runId, data, currentRun, params);
+        }
+
+        if (isTerminalRunStatus(currentRun.status)) {
+          const runTerminalEvents = new Set([
+            'run_started',
+            'run_completed',
+            'run_failed',
+            'run_cancelled',
+          ]);
+
+          if (data.eventType === 'run_cancelled' && currentRun.status === 'cancelled') {
+            const idempotentEvent = await appendEvent(
+              runId,
+              { ...data, specVersion } as AnyEventRequest,
+              params
+            );
+            return {
+              event: filterEventData(idempotentEvent, resolveData),
+              run: filterRunData(currentRun, resolveData),
+            };
+          }
+
+          if (runTerminalEvents.has(data.eventType)) {
+            throw new WorkflowAPIError(
+              `Cannot transition run from terminal state '${currentRun.status}'`,
+              { status: 409 }
+            );
+          }
+
+          if (data.eventType === 'step_created' || data.eventType === 'hook_created') {
+            throw new WorkflowAPIError(
+              `Cannot create entities on terminal run '${currentRun.status}'`,
+              { status: 409 }
+            );
+          }
+        }
+
+        let validatedStep: Step | undefined;
+        const stepEvents = new Set([
+          'step_started',
+          'step_completed',
+          'step_failed',
+          'step_retrying',
+        ]);
+
+        if (stepEvents.has(data.eventType)) {
+          if (!data.correlationId) {
+            throw new WorkflowAPIError('Step events require correlationId', {
+              status: 400,
+            });
+          }
+
+          validatedStep = await legacyStorage.steps.get(runId, data.correlationId, {
+            resolveData: 'all',
+          });
+
+          if (isTerminalStepStatus(validatedStep.status)) {
+            throw new WorkflowAPIError(
+              `Cannot modify step in terminal state '${validatedStep.status}'`,
+              { status: 409 }
+            );
+          }
+
+          if (isTerminalRunStatus(currentRun.status) && validatedStep.status !== 'running') {
+            throw new WorkflowAPIError(
+              `Cannot modify non-running step on terminal run '${currentRun.status}'`,
+              { status: 410 }
+            );
+          }
+        }
+
+        if (
+          (data.eventType === 'hook_received' || data.eventType === 'hook_disposed') &&
+          data.correlationId
+        ) {
+          await legacyStorage.hooks.get(data.correlationId, { resolveData: 'all' });
         }
 
         let run: WorkflowRun | undefined;

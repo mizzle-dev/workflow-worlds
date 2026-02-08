@@ -19,6 +19,10 @@ Workflow 4.1 moves world state transitions to an event-sourced flow.
 4. Add `listStreamsByRunId` in streamer implementations.
 5. Verify `resolveData: 'none'` behavior is still correct for runs, steps, events, and hooks.
 6. Add or update tests for legacy-run handling.
+7. Enforce terminal-state guards consistently:
+   - reject run state transitions on terminal runs (except idempotent `run_cancelled`)
+   - reject step mutations on terminal steps
+   - reject step/hook creation on terminal runs
 
 ## Legacy Run Compatibility
 
