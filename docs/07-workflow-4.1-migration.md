@@ -38,6 +38,20 @@ Legacy runs must remain readable and safely constrained.
 
 This is implemented across `starter`, `mongodb`, `redis`, and `turso`.
 
+## Implementation Strategy by World
+
+Not all worlds migrated to event-sourcing in the same way.
+
+### Starter and MongoDB — Fully inline
+
+`events.create()` directly constructs run, step, and hook state from event payloads. There is no delegation to legacy CRUD methods for new-spec runs. This is the target architecture.
+
+### Redis and Turso — Legacy-storage shim
+
+`events.create()` validates the event and then delegates to the pre-existing `legacyStorage.runs.update()`, `legacyStorage.steps.update()`, etc. The event is appended, but the actual state mutation still flows through the old CRUD path.
+
+This is intentional as a transitional step — it reduces risk by reusing battle-tested persistence logic. However, it means these worlds are not yet fully event-sourced. A future pass should inline the state-building logic to match Starter/MongoDB and remove the `legacyStorage` shim.
+
 ## Data and Schema Migration Requirements
 
 ### Redis

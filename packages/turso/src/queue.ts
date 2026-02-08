@@ -209,7 +209,7 @@ export function createQueue(config: QueueConfig): {
         });
       }
 
-      console.error('[turso-world] Message processing failed:', {
+      debug('Message processing failed:', {
         messageId,
         queueName,
         status: response.status,
@@ -217,7 +217,7 @@ export function createQueue(config: QueueConfig): {
       });
     } catch (err) {
       // Network error - schedule retry
-      console.error('[turso-world] Network error:', err);
+      debug('Network error:', err);
 
       if (attempt >= MAX_RETRIES) {
         await client.execute({
@@ -291,14 +291,14 @@ export function createQueue(config: QueueConfig): {
         await acquireConcurrency();
         processMessage(messageId, queueName, payload, attempt)
           .catch((err) => {
-            console.error('[turso-world] Error processing message:', err);
+            debug('Error processing message:', err);
           })
           .finally(() => {
             releaseConcurrency();
           });
       }
     } catch (err) {
-      console.error('[turso-world] Poll error:', err);
+      debug('Poll error:', err);
     }
 
     // Schedule next poll
@@ -452,7 +452,7 @@ export function createQueue(config: QueueConfig): {
 
           return Response.json({ ok: true });
         } catch (error) {
-          console.error('[turso-world] Handler error:', error);
+          debug('Handler error:', error);
           return Response.json(String(error), { status: 500 });
         }
       };

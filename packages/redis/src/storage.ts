@@ -874,27 +874,27 @@ export async function createStorage(options: {
     );
   }
 
-  const storage: Storage = {
+  const storage = {
     runs: {
-      async get(id, params) {
-        return legacyStorage.runs.get(id, params) as any;
+      async get(id: string, params?: any) {
+        return legacyStorage.runs.get(id, params);
       },
-      async list(params) {
-        return legacyStorage.runs.list(params) as any;
+      async list(params?: any) {
+        return legacyStorage.runs.list(params);
       },
     },
 
     steps: {
-      async get(runId, stepId, params) {
-        return legacyStorage.steps.get(runId, stepId, params) as any;
+      async get(runId: string | undefined, stepId: string, params?: any) {
+        return legacyStorage.steps.get(runId, stepId, params);
       },
-      async list(params) {
-        return legacyStorage.steps.list(params) as any;
+      async list(params: any) {
+        return legacyStorage.steps.list(params);
       },
     },
 
     events: {
-      async create(runId, data, params): Promise<EventResult> {
+      async create(runId: string | null, data: AnyEventRequest, params?: CreateEventParams): Promise<EventResult> {
         const resolveData = params?.resolveData ?? 'all';
         const specVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
 
@@ -1218,7 +1218,7 @@ export async function createStorage(options: {
           case 'wait_completed':
             break;
           default: {
-            const exhaustiveCheck: never = data;
+            const exhaustiveCheck: never = data as never;
             throw new WorkflowAPIError(
               `Unsupported event type: ${(exhaustiveCheck as { eventType: string }).eventType}`,
               { status: 400 }
@@ -1239,29 +1239,29 @@ export async function createStorage(options: {
         };
       },
 
-      async list(params) {
-        return legacyStorage.events.list(params) as any;
+      async list(params: any) {
+        return legacyStorage.events.list(params);
       },
 
-      async listByCorrelationId(params) {
-        return legacyStorage.events.listByCorrelationId(params) as any;
+      async listByCorrelationId(params: any) {
+        return legacyStorage.events.listByCorrelationId(params);
       },
     },
 
     hooks: {
-      async get(hookId, params) {
-        return legacyStorage.hooks.get(hookId, params) as any;
+      async get(hookId: string, params?: any) {
+        return legacyStorage.hooks.get(hookId, params);
       },
 
-      async getByToken(token, params) {
-        return legacyStorage.hooks.getByToken(token, params) as any;
+      async getByToken(token: string, params?: any) {
+        return legacyStorage.hooks.getByToken(token, params);
       },
 
-      async list(params) {
-        return legacyStorage.hooks.list(params) as any;
+      async list(params: any) {
+        return legacyStorage.hooks.list(params);
       },
     },
   };
 
-  return { storage };
+  return { storage: storage as unknown as Storage };
 }

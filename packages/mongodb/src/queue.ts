@@ -569,7 +569,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
           msg.maxRetries
         );
 
-        console.error('[mongodb-world] Message processing failed:', {
+        debug('Message processing failed:', {
           messageId: msg.messageId,
           queueName: msg.queueName,
           status: response.status,
@@ -591,7 +591,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
           msg.maxRetries
         );
 
-        console.error('[mongodb-world] Network error:', err);
+        debug('Network error:', err);
       }
     } finally {
       state.inflightMessages.delete(msg.messageId);
@@ -662,12 +662,12 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
                 await acquireConcurrency();
                 // Process in background
                 processMessage(msg, lock.lockToken).catch((err) => {
-                  console.error('[mongodb-world] Error processing message:', err);
+                  debug('Error processing message:', err);
                 });
               }
             }
           } catch (err) {
-            console.error('[mongodb-world] Poll error:', err);
+            debug('Poll error:', err);
           }
 
           // Wait before next poll
@@ -733,12 +733,12 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
                 if (lock) {
                   await acquireConcurrency();
                   processMessage(msg, lock.lockToken).catch((err) => {
-                    console.error('[mongodb-world] Error processing message:', err);
+                    debug('Error processing message:', err);
                   });
                 }
               }
             } catch (err) {
-              console.error('[mongodb-world] Scheduled poll error:', err);
+              debug('Scheduled poll error:', err);
             }
 
             await sleep(pollIntervalMs).catch(() => {});
@@ -759,7 +759,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
             if (lock) {
               await acquireConcurrency();
               processMessage(doc, lock.lockToken).catch((err) => {
-                console.error('[mongodb-world] Error processing message:', err);
+                debug('Error processing message:', err);
               });
             }
           }
@@ -924,7 +924,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
 
           return Response.json({ ok: true });
         } catch (error) {
-          console.error('[mongodb-world] Handler error:', error);
+          debug('Handler error:', error);
           return Response.json(String(error), { status: 500 });
         }
       };
@@ -955,7 +955,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
       // Start periodic recovery
       state.recoveryInterval = setInterval(() => {
         recoverStuckMessages().catch((err) => {
-          console.error('[mongodb-world] Recovery error:', err);
+          debug('Recovery error:', err);
         });
       }, STUCK_RECOVERY_INTERVAL_MS);
 
@@ -963,7 +963,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
       state.watcher = await createWatcher();
       state.watcher.start().catch((err) => {
         if (!state.isShuttingDown) {
-          console.error('[mongodb-world] Watcher error:', err);
+          debug('Watcher error:', err);
         }
       });
 

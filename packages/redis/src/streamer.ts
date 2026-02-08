@@ -9,6 +9,7 @@
 import type { Streamer } from '@workflow/world';
 import type { Redis } from 'ioredis';
 import { monotonicFactory } from 'ulid';
+import { debug } from './utils.js';
 
 const generateUlid = monotonicFactory();
 
@@ -374,7 +375,7 @@ export async function createStreamer(options: {
                 }
               }
             } catch (err) {
-              console.error('[redis-world] Stream poll error:', err);
+              debug('Stream poll error:', err);
             }
           }, 100); // Poll every 100ms
 
