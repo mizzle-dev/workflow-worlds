@@ -444,9 +444,18 @@ jobs:
         id: summary
         run: |
           mkdir -p e2e-results
-          node scripts/aggregate-e2e-results.js e2e-results \
-            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          node scripts/aggregate-e2e-results.cjs e2e-results \
+            --run-url "$RUN_URL" \
             >> "$GITHUB_STEP_SUMMARY" || true
+          # Ensure summary file exists for PR comment (fallback if script failed)
+          if [ ! -s e2e-results/e2e-summary.md ]; then
+            cat > e2e-results/e2e-summary.md <<EOF
+          ## E2E Test Results
+
+          E2E jobs failed before producing test results. [View workflow run]($RUN_URL)
+          EOF
+          fi
 
       - name: Comment on PR
         if: github.event_name == 'pull_request'
@@ -454,7 +463,3 @@ jobs:
         with:
           header: e2e-test-results
           path: e2e-results/e2e-summary.md
-          message: |
-            ## ❌ E2E Test Results
-
-            E2E jobs failed before producing test results. [View workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
