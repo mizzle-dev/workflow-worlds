@@ -44,6 +44,7 @@ jobs:
     outputs:
       upstream-cache-key: ${{ steps.upstream-meta.outputs.cache-key }}
       tarball-cache-key: ${{ steps.tarball-meta.outputs.cache-key }}
+      upstream-pnpm-version: ${{ steps.upstream-meta.outputs.pnpm-version }}
     steps:
       # --- Build local world packages ---
       - uses: actions/checkout@v4
@@ -88,6 +89,9 @@ jobs:
           SHA=$(git -C .upstream rev-parse HEAD)
           echo "cache-key=upstream-build-${SHA}" >> "$GITHUB_OUTPUT"
           echo "Upstream commit: $SHA"
+          PNPM_VERSION=$(node -e "const pm = require('./.upstream/package.json').packageManager || ''; console.log(pm.split('@')[1] || '10.14.0')")
+          echo "pnpm-version=${PNPM_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Upstream pnpm version: $PNPM_VERSION"
 
       - name: Restore upstream cache
         id: upstream-cache
@@ -108,7 +112,13 @@ jobs:
 
       - name: Trim upstream cache
         if: steps.upstream-cache.outputs.cache-hit != 'true'
-        run: rm -rf .upstream/.git
+        run: |
+          # Remove .git and all node_modules to keep cache small (~200MB vs ~1.5GB)
+          # E2E jobs will run pnpm install to restore node_modules
+          rm -rf .upstream/.git
+          find .upstream -name node_modules -type d -prune -exec rm -rf {} +
+          echo "Cache size after trim:"
+          du -sh .upstream
 
   # ============================================================
   # E2E tests per world (run in parallel)
@@ -140,11 +150,17 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: '10.14.0'
+          version: ${{ needs.build.outputs.upstream-pnpm-version }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: .upstream/pnpm-lock.yaml
+
+      - name: Install upstream dependencies
+        working-directory: .upstream
+        run: pnpm install --frozen-lockfile
 
       - name: Install turso world
         working-directory: .upstream
@@ -232,11 +248,17 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: '10.14.0'
+          version: ${{ needs.build.outputs.upstream-pnpm-version }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: .upstream/pnpm-lock.yaml
+
+      - name: Install upstream dependencies
+        working-directory: .upstream
+        run: pnpm install --frozen-lockfile
 
       - name: Install mongodb world
         working-directory: .upstream
@@ -319,11 +341,17 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: '10.14.0'
+          version: ${{ needs.build.outputs.upstream-pnpm-version }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: .upstream/pnpm-lock.yaml
+
+      - name: Install upstream dependencies
+        working-directory: .upstream
+        run: pnpm install --frozen-lockfile
 
       - name: Install redis world
         working-directory: .upstream
