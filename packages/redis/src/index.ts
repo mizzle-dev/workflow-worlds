@@ -228,10 +228,14 @@ export function createWorld(config: RedisWorldConfig = {}): World {
       if (data.eventType !== 'run_created') {
         throw new Error('runId must be a string for non run_created events');
       }
-      return storage.events.create(null, data as RunCreatedEventRequest, params);
+      return storage.events.create(null, data, params);
     }
 
-    return storage.events.create(runId, data as CreateEventRequest, params);
+    if (data.eventType === 'run_created') {
+      throw new Error('runId must be null for run_created events');
+    }
+
+    return storage.events.create(runId, data, params);
   }
 
   async function listEvents(
