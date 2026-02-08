@@ -537,7 +537,7 @@ export function createStorage(config: StorageConfig): Storage {
         data: AnyEventRequest,
         params?: CreateEventParams
       ): Promise<Event> {
-        const eventId = `wevt_${generateUlid()}`;
+        const eventId = `evnt_${generateUlid()}`;
         const now = new Date();
         const nowStr = now.toISOString();
 
@@ -982,6 +982,17 @@ export function createStorage(config: StorageConfig): Storage {
                 { status: 400 }
               );
             }
+            try {
+              await legacyStorage.steps.get(runId, stepId, { resolveData: 'none' });
+              throw new WorkflowAPIError(`Step '${stepId}' already exists`, {
+                status: 409,
+              });
+            } catch (err) {
+              if (err instanceof WorkflowAPIError && (err as WorkflowAPIError & { status?: number }).status === 409) {
+                throw err;
+              }
+              // 404 is expected — step doesn't exist yet
+            }
             step = await legacyStorage.steps.create(runId, {
               stepId,
               stepName: data.eventData.stepName,
@@ -992,29 +1003,26 @@ export function createStorage(config: StorageConfig): Storage {
           }
           case 'step_started': {
             const stepId = data.correlationId;
-            if (!stepId) {
+            if (!stepId || !validatedStep) {
               throw new WorkflowAPIError(
                 'correlationId is required for step_started',
                 { status: 400 }
               );
             }
-            const existingStep = await legacyStorage.steps.get(runId, stepId, {
-              resolveData: 'all',
-            });
-            if (existingStep.retryAfter && existingStep.retryAfter.getTime() > Date.now()) {
+            if (validatedStep.retryAfter && validatedStep.retryAfter.getTime() > Date.now()) {
               const err = new WorkflowAPIError(
                 `Cannot start step '${stepId}' before retryAfter`,
                 { status: 425 }
               );
               (err as WorkflowAPIError & { meta?: Record<string, string> }).meta = {
                 stepId,
-                retryAfter: existingStep.retryAfter.toISOString(),
+                retryAfter: validatedStep.retryAfter.toISOString(),
               };
               throw err;
             }
             step = await legacyStorage.steps.update(runId, stepId, {
               status: 'running',
-              attempt: data.eventData?.attempt ?? existingStep.attempt + 1,
+              attempt: validatedStep.attempt + 1,
               retryAfter: undefined,
             });
             break;

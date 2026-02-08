@@ -210,7 +210,7 @@ async function handleLegacyEvent(
     const event: Event = {
       ...data,
       runId,
-      eventId: `wevt_${generateUlid()}`,
+      eventId: `evnt_${generateUlid()}`,
       createdAt: now,
       specVersion: SPEC_VERSION_CURRENT,
     } as Event;
@@ -336,7 +336,7 @@ export function createStorage(): Storage {
       ) {
         const resolveData = resolveDataOption(params);
         const now = new Date();
-        const eventId = `wevt_${generateUlid()}`;
+        const eventId = `evnt_${generateUlid()}`;
         const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
 
         let effectiveRunId: string;
@@ -559,6 +559,13 @@ export function createStorage(): Storage {
           store.runs.set(run.runId, run);
           cleanupHooksForRun(store, run.runId);
         } else if (data.eventType === 'step_created') {
+          const existingStep = readStep(store, effectiveRunId, data.correlationId);
+          if (existingStep) {
+            throw new WorkflowAPIError(`Step '${data.correlationId}' already exists`, {
+              status: 409,
+            });
+          }
+
           step = {
             runId: effectiveRunId,
             stepId: data.correlationId,
