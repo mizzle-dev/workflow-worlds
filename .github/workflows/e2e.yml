@@ -1,0 +1,298 @@
+# Runs the vercel/workflow e2e test suite against local builds of our world packages.
+# This mirrors what the upstream CI does when testing community worlds, but uses
+# our local (unpublished) builds instead of the npm-published packages.
+
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      world:
+        description: 'World to test'
+        type: choice
+        options: ['all', 'turso', 'mongodb', 'redis']
+        default: 'all'
+      upstream-ref:
+        description: 'vercel/workflow git ref to test against'
+        type: string
+        default: 'main'
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # Phase 1: Build our world packages and create tarballs
+  # ============================================================
+  build:
+    name: Build Packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Pack world tarballs
+        run: |
+          mkdir -p .tarballs
+          for pkg in turso mongodb redis; do
+            (cd "packages/$pkg" && pnpm pack --pack-destination ../../.tarballs)
+          done
+          ls -la .tarballs/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: world-tarballs
+          path: .tarballs/*.tgz
+          retention-days: 1
+
+  # ============================================================
+  # Phase 2: E2E tests per world (run in parallel)
+  # ============================================================
+
+  e2e-turso:
+    name: E2E - Turso
+    needs: build
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      inputs.world == 'all' ||
+      inputs.world == 'turso'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout upstream
+        uses: actions/checkout@v4
+        with:
+          repository: vercel/workflow
+          ref: ${{ inputs.upstream-ref || 'main' }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'true'
+
+      - name: Download tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: world-tarballs
+          path: .tarballs
+
+      - name: Install turso world
+        run: |
+          TARBALL=$(ls .tarballs/workflow-worlds-turso-*.tgz | head -1)
+          pnpm --filter nextjs-turbopack add "$TARBALL"
+
+      - name: Setup turso database
+        working-directory: workbench/nextjs-turbopack
+        run: pnpm exec workflow-turso-setup
+        env:
+          WORKFLOW_TURSO_DATABASE_URL: 'file:${{ github.workspace }}/workbench/nextjs-turbopack/workflow.db'
+
+      - name: Resolve symlinks
+        run: CI=true bash scripts/resolve-symlinks.sh workbench/nextjs-turbopack
+
+      - name: Run E2E tests
+        env:
+          NODE_OPTIONS: '--enable-source-maps'
+          APP_NAME: nextjs-turbopack
+          DEPLOYMENT_URL: 'http://localhost:3000'
+          WORKFLOW_TARGET_WORLD: '@workflow-worlds/turso'
+          WORKFLOW_TURSO_DATABASE_URL: 'file:${{ github.workspace }}/workbench/nextjs-turbopack/workflow.db'
+          WORKFLOW_PUBLIC_MANIFEST: '1'
+          WORKFLOW_SERVICE_URL: 'http://localhost:3000'
+          DEV_TEST_CONFIG: >-
+            {"name":"nextjs-turbopack","project":"workbench-nextjs-turbopack-workflow",
+            "generatedStepPath":"app/.well-known/workflow/v1/step/route.js",
+            "generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js",
+            "apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}
+        run: |
+          cd workbench/nextjs-turbopack && pnpm dev &
+          echo "Waiting for dev server..." && sleep 15
+          cd "${{ github.workspace }}"
+          pnpm vitest run packages/core/e2e/e2e.test.ts \
+            --reporter=default --reporter=json \
+            --outputFile=e2e-turso.json || EXIT_CODE=$?
+          exit ${EXIT_CODE:-0}
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results-turso
+          path: e2e-turso.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e-mongodb:
+    name: E2E - MongoDB
+    needs: build
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      inputs.world == 'all' ||
+      inputs.world == 'mongodb'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand(\"ping\").ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout upstream
+        uses: actions/checkout@v4
+        with:
+          repository: vercel/workflow
+          ref: ${{ inputs.upstream-ref || 'main' }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'true'
+
+      - name: Download tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: world-tarballs
+          path: .tarballs
+
+      - name: Install mongodb world
+        run: |
+          TARBALL=$(ls .tarballs/workflow-worlds-mongodb-*.tgz | head -1)
+          pnpm --filter nextjs-turbopack add "$TARBALL"
+
+      - name: Resolve symlinks
+        run: CI=true bash scripts/resolve-symlinks.sh workbench/nextjs-turbopack
+
+      - name: Run E2E tests
+        env:
+          NODE_OPTIONS: '--enable-source-maps'
+          APP_NAME: nextjs-turbopack
+          DEPLOYMENT_URL: 'http://localhost:3000'
+          WORKFLOW_TARGET_WORLD: '@workflow-worlds/mongodb'
+          WORKFLOW_MONGODB_URI: 'mongodb://localhost:27017'
+          WORKFLOW_MONGODB_DATABASE_NAME: 'workflow'
+          WORKFLOW_PUBLIC_MANIFEST: '1'
+          WORKFLOW_SERVICE_URL: 'http://localhost:3000'
+          DEV_TEST_CONFIG: >-
+            {"name":"nextjs-turbopack","project":"workbench-nextjs-turbopack-workflow",
+            "generatedStepPath":"app/.well-known/workflow/v1/step/route.js",
+            "generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js",
+            "apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}
+        run: |
+          cd workbench/nextjs-turbopack && pnpm dev &
+          echo "Waiting for dev server..." && sleep 15
+          cd "${{ github.workspace }}"
+          pnpm vitest run packages/core/e2e/e2e.test.ts \
+            --reporter=default --reporter=json \
+            --outputFile=e2e-mongodb.json || EXIT_CODE=$?
+          exit ${EXIT_CODE:-0}
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results-mongodb
+          path: e2e-mongodb.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e-redis:
+    name: E2E - Redis
+    needs: build
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      inputs.world == 'all' ||
+      inputs.world == 'redis'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout upstream
+        uses: actions/checkout@v4
+        with:
+          repository: vercel/workflow
+          ref: ${{ inputs.upstream-ref || 'main' }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'true'
+
+      - name: Download tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: world-tarballs
+          path: .tarballs
+
+      - name: Install redis world
+        run: |
+          TARBALL=$(ls .tarballs/workflow-worlds-redis-*.tgz | head -1)
+          pnpm --filter nextjs-turbopack add "$TARBALL"
+
+      - name: Resolve symlinks
+        run: CI=true bash scripts/resolve-symlinks.sh workbench/nextjs-turbopack
+
+      - name: Run E2E tests
+        env:
+          NODE_OPTIONS: '--enable-source-maps'
+          APP_NAME: nextjs-turbopack
+          DEPLOYMENT_URL: 'http://localhost:3000'
+          WORKFLOW_TARGET_WORLD: '@workflow-worlds/redis'
+          WORKFLOW_REDIS_URI: 'redis://localhost:6379'
+          WORKFLOW_PUBLIC_MANIFEST: '1'
+          WORKFLOW_SERVICE_URL: 'http://localhost:3000'
+          DEV_TEST_CONFIG: >-
+            {"name":"nextjs-turbopack","project":"workbench-nextjs-turbopack-workflow",
+            "generatedStepPath":"app/.well-known/workflow/v1/step/route.js",
+            "generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js",
+            "apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}
+        run: |
+          cd workbench/nextjs-turbopack && pnpm dev &
+          echo "Waiting for dev server..." && sleep 15
+          cd "${{ github.workspace }}"
+          pnpm vitest run packages/core/e2e/e2e.test.ts \
+            --reporter=default --reporter=json \
+            --outputFile=e2e-redis.json || EXIT_CODE=$?
+          exit ${EXIT_CODE:-0}
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results-redis
+          path: e2e-redis.json
+          retention-days: 7
+          if-no-files-found: ignore
