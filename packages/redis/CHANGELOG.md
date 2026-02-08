@@ -1,5 +1,13 @@
 # @workflow-worlds/redis
 
+## 0.2.1
+
+### Patch Changes
+
+- [#25](https://github.com/mizzle-dev/workflow-worlds/pull/25) [`e91a2b2`](https://github.com/mizzle-dev/workflow-worlds/commit/e91a2b2e3b234dcf0c8694886424d72f468a314d) Thanks [@dustintownsend](https://github.com/dustintownsend)! - Accept client-provided runId for run_created events
+
+  The upstream @workflow/core runtime now generates runId client-side and passes it to events.create() for run_created events. Updated all world implementations to accept the client-provided runId instead of rejecting non-null values. Falls back to server-generated runId when null is passed for backward compatibility.
+
 ## 0.2.0
 
 ### Minor Changes
