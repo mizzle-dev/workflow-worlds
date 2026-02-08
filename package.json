@@ -13,6 +13,11 @@
     "bench:starter": "WORKFLOW_TARGET_WORLD=@workflow-worlds/starter pnpm bench",
     "bench:mongodb": "WORKFLOW_TARGET_WORLD=@workflow-worlds/mongodb pnpm bench",
     "bench:redis": "WORKFLOW_TARGET_WORLD=@workflow-worlds/redis pnpm bench",
+    "e2e": "./scripts/e2e-upstream.sh",
+    "e2e:starter": "./scripts/e2e-upstream.sh starter",
+    "e2e:turso": "./scripts/e2e-upstream.sh turso",
+    "e2e:mongodb": "./scripts/e2e-upstream.sh mongodb",
+    "e2e:redis": "./scripts/e2e-upstream.sh redis",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "turbo run build --filter='!@workflow-worlds/workbench' && changeset publish"
