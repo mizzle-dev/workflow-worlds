@@ -1,6 +1,6 @@
 {
   "name": "@workflow-worlds/turso",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Turso/libSQL World implementation for Workflow DevKit",
   "author": "Dustin Townsend",
   "license": "MIT",
