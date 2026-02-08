@@ -127,9 +127,9 @@ export function createWorld(config: TursoWorldConfig = {}): World {
 
   // Lazy initialization promise
   let initPromise: Promise<{
-    storage: any;
-    queue: any;
-    streamer: any;
+    storage: ReturnType<typeof createStorage>;
+    queue: ReturnType<typeof createQueue>['queue'];
+    streamer: ReturnType<typeof createStreamer>;
     startQueue: () => Promise<void>;
     closeQueue: () => Promise<void>;
   }> | null = null;
@@ -171,11 +171,11 @@ export function createWorld(config: TursoWorldConfig = {}): World {
     runs: {
       async get(id, params) {
         const { storage } = await ensureInitialized();
-        return storage.runs.get(id, params);
+        return storage.runs.get(id, params) as any;
       },
       async list(params) {
         const { storage } = await ensureInitialized();
-        return storage.runs.list(params);
+        return storage.runs.list(params) as any;
       },
     },
 
@@ -185,11 +185,11 @@ export function createWorld(config: TursoWorldConfig = {}): World {
     steps: {
       async get(runId, stepId, params) {
         const { storage } = await ensureInitialized();
-        return storage.steps.get(runId, stepId, params);
+        return storage.steps.get(runId, stepId, params) as any;
       },
       async list(params) {
         const { storage } = await ensureInitialized();
-        return storage.steps.list(params);
+        return storage.steps.list(params) as any;
       },
     },
 
@@ -199,10 +199,7 @@ export function createWorld(config: TursoWorldConfig = {}): World {
     events: {
       async create(runId, data, params) {
         const { storage } = await ensureInitialized();
-        if (runId === null) {
-          return storage.events.create(null, data, params);
-        }
-        return storage.events.create(runId, data, params);
+        return (storage.events.create as Function)(runId, data, params);
       },
       async list(params) {
         const { storage } = await ensureInitialized();

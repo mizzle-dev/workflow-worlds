@@ -416,15 +416,21 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
         const resolveData = resolveDataOption(params);
         const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
 
-        const effectiveRunId =
-          data.eventType === 'run_created'
-            ? (runId ?? `wrun_${generateUlid()}`)
-            : runId;
-
-        if (!effectiveRunId) {
-          throw new WorkflowAPIError('runId is required for non run_created events', {
-            status: 400,
-          });
+        let effectiveRunId: string;
+        if (data.eventType === 'run_created') {
+          if (runId !== null) {
+            throw new WorkflowAPIError('runId must be null for run_created events', {
+              status: 400,
+            });
+          }
+          effectiveRunId = `wrun_${generateUlid()}`;
+        } else {
+          if (!runId) {
+            throw new WorkflowAPIError('runId is required for non run_created events', {
+              status: 400,
+            });
+          }
+          effectiveRunId = runId;
         }
 
         const currentRun = await getRunById(effectiveRunId);
@@ -480,6 +486,12 @@ export async function createStorage(config: MongoStorageConfig = {}): Promise<{
               );
             }
           }
+        }
+
+        if (!currentRun && data.eventType !== 'run_created') {
+          throw new WorkflowAPIError(`Run not found: ${effectiveRunId}`, {
+            status: 404,
+          });
         }
 
         let validatedStep: Step | null = null;

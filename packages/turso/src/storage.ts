@@ -186,6 +186,7 @@ function toStep(row: StepRow, specVersion?: number): Step {
     output: row.output,
     error: (row.error ?? undefined) as Step['error'],
     attempt: row.attempt ?? 0,
+    retryAfter: toDate(row.retryAfter),
     startedAt: toDate(row.startedAt),
     completedAt: toDate(row.completedAt),
     createdAt: toDate(row.createdAt) ?? new Date(),
@@ -492,6 +493,7 @@ export function createStorage(config: StorageConfig): Storage {
             output: updated.output,
             error: updated.error,
             attempt: updated.attempt,
+            retryAfter: toIsoString(updated.retryAfter),
             startedAt: toIsoString(updated.startedAt),
             completedAt: toIsoString(updated.completedAt),
             updatedAt: nowStr,
@@ -999,9 +1001,21 @@ export function createStorage(config: StorageConfig): Storage {
             const existingStep = await legacyStorage.steps.get(runId, stepId, {
               resolveData: 'all',
             });
+            if (existingStep.retryAfter && existingStep.retryAfter.getTime() > Date.now()) {
+              const err = new WorkflowAPIError(
+                `Cannot start step '${stepId}' before retryAfter`,
+                { status: 425 }
+              );
+              (err as WorkflowAPIError & { meta?: Record<string, string> }).meta = {
+                stepId,
+                retryAfter: existingStep.retryAfter.toISOString(),
+              };
+              throw err;
+            }
             step = await legacyStorage.steps.update(runId, stepId, {
               status: 'running',
               attempt: data.eventData?.attempt ?? existingStep.attempt + 1,
+              retryAfter: undefined,
             });
             break;
           }

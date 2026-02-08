@@ -98,6 +98,7 @@ export const steps = sqliteTable(
     error: Cbor<unknown>()('error'),
 
     attempt: integer('attempt').default(0),
+    retryAfter: text('retry_after'),
     startedAt: text('started_at'),
     completedAt: text('completed_at'),
     createdAt: text('created_at').notNull(),

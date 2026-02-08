@@ -341,7 +341,12 @@ export function createStorage(): Storage {
 
         let effectiveRunId: string;
         if (data.eventType === 'run_created') {
-          effectiveRunId = runId ?? `wrun_${generateUlid()}`;
+          if (runId !== null) {
+            throw new WorkflowAPIError('runId must be null for run_created events', {
+              status: 400,
+            });
+          }
+          effectiveRunId = `wrun_${generateUlid()}`;
         } else {
           if (!runId) {
             throw new WorkflowAPIError('runId is required for non run_created events', {
@@ -405,6 +410,12 @@ export function createStorage(): Storage {
               );
             }
           }
+        }
+
+        if (!currentRun && data.eventType !== 'run_created') {
+          throw new WorkflowAPIError(`Run not found: ${effectiveRunId}`, {
+            status: 404,
+          });
         }
 
         let validatedStep: Step | undefined;

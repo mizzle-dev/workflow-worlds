@@ -1085,9 +1085,21 @@ export async function createStorage(options: {
             const existingStep = await legacyStorage.steps.get(runId, stepId, {
               resolveData: 'all',
             });
+            if (existingStep.retryAfter && existingStep.retryAfter.getTime() > Date.now()) {
+              const err = new WorkflowAPIError(
+                `Cannot start step '${stepId}' before retryAfter`,
+                { status: 425 }
+              );
+              (err as WorkflowAPIError & { meta?: Record<string, string> }).meta = {
+                stepId,
+                retryAfter: existingStep.retryAfter.toISOString(),
+              };
+              throw err;
+            }
             step = await legacyStorage.steps.update(runId, stepId, {
               status: 'running',
               attempt: data.eventData?.attempt ?? existingStep.attempt + 1,
+              retryAfter: undefined,
             });
             break;
           }

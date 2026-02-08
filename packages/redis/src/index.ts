@@ -82,9 +82,9 @@ export function createWorld(config: RedisWorldConfig = {}): World {
 
   // Track initialization
   let initPromise: Promise<{
-    storage: any;
-    queue: any;
-    streamer: any;
+    storage: Awaited<ReturnType<typeof createStorage>>['storage'];
+    queue: Awaited<ReturnType<typeof createQueue>>['queue'];
+    streamer: Awaited<ReturnType<typeof createStreamer>>['streamer'];
     startQueue: () => Promise<void>;
     closeQueue: () => Promise<void>;
     closeStreamer: () => Promise<void>;
@@ -135,11 +135,11 @@ export function createWorld(config: RedisWorldConfig = {}): World {
     runs: {
       async get(id, params) {
         const { storage } = await ensureInitialized();
-        return storage.runs.get(id, params);
+        return storage.runs.get(id, params) as any;
       },
       async list(params) {
         const { storage } = await ensureInitialized();
-        return storage.runs.list(params);
+        return storage.runs.list(params) as any;
       },
     },
 
@@ -149,11 +149,11 @@ export function createWorld(config: RedisWorldConfig = {}): World {
     steps: {
       async get(runId, stepId, params) {
         const { storage } = await ensureInitialized();
-        return storage.steps.get(runId, stepId, params);
+        return storage.steps.get(runId, stepId, params) as any;
       },
       async list(params) {
         const { storage } = await ensureInitialized();
-        return storage.steps.list(params);
+        return storage.steps.list(params) as any;
       },
     },
 
@@ -163,10 +163,7 @@ export function createWorld(config: RedisWorldConfig = {}): World {
     events: {
       async create(runId, data, params) {
         const { storage } = await ensureInitialized();
-        if (runId === null) {
-          return storage.events.create(null, data, params);
-        }
-        return storage.events.create(runId, data, params);
+        return (storage.events.create as Function)(runId, data, params);
       },
       async list(params) {
         const { storage } = await ensureInitialized();

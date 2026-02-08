@@ -252,16 +252,16 @@ The implementation uses `WorkflowAPIError` from `@workflow/errors` for consisten
 
 4. **Schema Migrations**: Run `pnpm exec workflow-turso-setup` before first use and after package upgrades to apply any new migrations
 
-## Upgrade Notes (Workflow 4.1)
-
-- Turso now relies on schema migrations for new compatibility tables.
-- Ensure `workflow-turso-setup` runs as part of deployment before traffic is shifted.
-
 5. **Graceful Shutdown**: The queue waits up to 30 seconds for in-flight messages during shutdown
 
 6. **Monitoring**: Monitor polling performance and queue_messages table growth
 
 7. **SQLite Concurrency**: WAL (Write-Ahead Logging) mode is enabled automatically for better concurrent access. A 5-second busy timeout is configured to handle lock contention gracefully
+
+## Upgrade Notes (Workflow 4.1)
+
+- Turso now relies on schema migrations for new compatibility tables.
+- Ensure `workflow-turso-setup` runs as part of deployment before traffic is shifted.
 
 ## License
 
