@@ -505,6 +505,8 @@ done <<< "${WORLD_ENV[$WORLD_ID]}"
 export DEPLOYMENT_URL="http://localhost:3000"
 export APP_NAME="$APP_NAME"
 export NODE_OPTIONS="--enable-source-maps"
+export WORKFLOW_PUBLIC_MANIFEST="1"
+export WORKFLOW_SERVICE_URL="http://localhost:3000"
 export DEV_TEST_CONFIG="{\"name\":\"$APP_NAME\",\"project\":\"workbench-${APP_NAME}-workflow\",\"generatedStepPath\":\"app/.well-known/workflow/v1/step/route.js\",\"generatedWorkflowPath\":\"app/.well-known/workflow/v1/flow/route.js\",\"apiFilePath\":\"app/api/chat/route.ts\",\"apiFileImportPath\":\"../../..\"}"
 
 # =============================================================================
