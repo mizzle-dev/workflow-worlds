@@ -76,7 +76,7 @@ WORLD_SETUP[redis]=""
 declare -A WORLD_ENV
 WORLD_ENV[starter]="WORKFLOW_TARGET_WORLD=@workflow-worlds/starter"
 WORLD_ENV[turso]="WORKFLOW_TARGET_WORLD=@workflow-worlds/turso
-WORKFLOW_TURSO_DATABASE_URL=file:workflow.db"
+WORKFLOW_TURSO_DATABASE_URL=file:$UPSTREAM_DIR/workbench/$APP_NAME/workflow.db"
 WORLD_ENV[mongodb]="WORKFLOW_TARGET_WORLD=@workflow-worlds/mongodb
 WORKFLOW_MONGODB_URI=mongodb://localhost:27017
 WORKFLOW_MONGODB_DATABASE_NAME=workflow"
