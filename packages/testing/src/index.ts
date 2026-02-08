@@ -8,6 +8,7 @@
  * - **Queue**: resumeAt dates, payload preservation, idempotency
  * - **Hook Cleanup**: Token reuse after workflow completion
  * - **Streamer**: Binary data, named streams, null bytes
+ * - **Event Sourcing**: Workflow 4.1 contract guards, resolveData='none', legacy/future compatibility
  *
  * ## Usage
  *
@@ -45,3 +46,6 @@ export type { StreamerTestOptions } from './streamer.js';
 
 export { outputPreservationTests } from './output-preservation.js';
 export type { OutputPreservationTestOptions } from './output-preservation.js';
+
+export { eventSourcingTests } from './event-sourcing.js';
+export type { EventSourcingTestOptions } from './event-sourcing.js';

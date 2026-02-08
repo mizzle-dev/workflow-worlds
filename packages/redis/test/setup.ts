@@ -20,6 +20,21 @@ let container: Awaited<ReturnType<RedisContainer['start']>> | null = null;
 let redisClient: Redis | undefined;
 let startedLocalContainer = false;
 
+async function waitForRedisReady(client: Redis, timeoutMs = 15_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      await client.ping();
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  throw new Error(`Redis did not become ready within ${timeoutMs}ms`);
+}
+
 beforeAll(async () => {
   // Skip testcontainers if env var is already set (e.g., GitHub Actions services)
   if (process.env.WORKFLOW_REDIS_URI) {
@@ -56,6 +71,8 @@ function getRedisClient(): Redis {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
     });
+    // Prevent ioredis from treating expected teardown reconnect errors as unhandled.
+    redisClient.on('error', () => {});
   }
   return redisClient;
 }
@@ -65,13 +82,7 @@ export const worldPath = join(__dirname, '..', 'dist', 'index.js');
 export async function createStorage() {
   const mod = await import(join(__dirname, '..', 'dist', 'storage.js'));
   const client = getRedisClient();
-
-  if (client.status !== 'ready') {
-    await new Promise<void>((resolve, reject) => {
-      client.once('ready', resolve);
-      client.once('error', reject);
-    });
-  }
+  await waitForRedisReady(client);
 
   const { storage } = await mod.createStorage({
     redis: client,
@@ -83,13 +94,7 @@ export async function createStorage() {
 export async function createStreamer() {
   const mod = await import(join(__dirname, '..', 'dist', 'streamer.js'));
   const client = getRedisClient();
-
-  if (client.status !== 'ready') {
-    await new Promise<void>((resolve, reject) => {
-      client.once('ready', resolve);
-      client.once('error', reject);
-    });
-  }
+  await waitForRedisReady(client);
 
   const { streamer } = await mod.createStreamer({
     redis: client,

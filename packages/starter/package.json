@@ -24,8 +24,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "pnpm build && vitest run",
-    "test:only": "vitest run",
+    "test": "pnpm --filter @workflow-worlds/testing build && pnpm build && vitest run",
+    "test:only": "pnpm --filter @workflow-worlds/testing build && vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

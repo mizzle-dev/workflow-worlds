@@ -36,8 +36,8 @@
   "scripts": {
     "build": "tsc && chmod +x bin/setup.js",
     "dev": "tsc --watch",
-    "test": "pnpm build && vitest run",
-    "test:only": "vitest run",
+    "test": "pnpm --filter @workflow-worlds/testing build && pnpm build && vitest run",
+    "test:only": "pnpm --filter @workflow-worlds/testing build && vitest run",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:push": "node dist/cli.js"
