@@ -366,3 +366,40 @@ jobs:
           path: .upstream/e2e-redis.json
           retention-days: 7
           if-no-files-found: ignore
+
+  # ============================================================
+  # Aggregate results and post summary
+  # ============================================================
+  summary:
+    name: E2E Summary
+    needs: [e2e-turso, e2e-mongodb, e2e-redis]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-results-*
+          path: e2e-results
+          merge-multiple: true
+
+      - name: Generate summary
+        id: summary
+        run: |
+          node scripts/aggregate-e2e-results.js e2e-results \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: e2e-test-results
+          path: e2e-results/e2e-summary.md
