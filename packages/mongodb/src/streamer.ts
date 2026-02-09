@@ -241,6 +241,8 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
           // Buffer for chunks that arrive during initial load
           const bufferedEventChunks: StreamChunk[] = [];
           let isLoadingFromStorage = true;
+          let closeRequested = false;
+          let isClosed = false;
 
           // Helper to convert MongoDB Binary to Uint8Array
           const toUint8Array = (data: Uint8Array | unknown): Uint8Array => {
@@ -248,8 +250,24 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
             return new Uint8Array((data as any).buffer || data);
           };
 
+          const closeController = () => {
+            if (isClosed) {
+              return;
+            }
+            isClosed = true;
+            cleanup();
+            try {
+              controller.close();
+            } catch {
+              // Ignore if already closed
+            }
+          };
+
           // Handler for new chunks (real-time)
           const chunkHandler = (chunk: StreamChunk) => {
+            if (isClosed) {
+              return;
+            }
             // Skip if already delivered
             if (deliveredChunkIds.has(chunk.chunkId)) {
               return;
@@ -278,12 +296,13 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
 
           // Handler for stream close
           const closeHandler = () => {
-            cleanup();
-            try {
-              controller.close();
-            } catch {
-              // Ignore if already closed
+            // If close arrives while we're still loading persisted chunks,
+            // defer closure until we flush buffered data.
+            if (isLoadingFromStorage) {
+              closeRequested = true;
+              return;
             }
+            closeController();
           };
 
           // Cleanup function
@@ -307,8 +326,7 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
 
             // Check for EOF
             if (chunk.eof) {
-              cleanup();
-              controller.close();
+              closeController();
               return;
             }
 
@@ -338,8 +356,7 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
 
           for (const chunk of bufferedEventChunks) {
             if (chunk.eof) {
-              cleanup();
-              controller.close();
+              closeController();
               return;
             }
             const data = toUint8Array(chunk.data);
@@ -350,9 +367,8 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
 
           // Check if we already received EOF while loading
           const lastChunk = existingChunks[existingChunks.length - 1];
-          if (lastChunk?.eof) {
-            cleanup();
-            controller.close();
+          if (closeRequested || lastChunk?.eof) {
+            closeController();
           }
         },
 
