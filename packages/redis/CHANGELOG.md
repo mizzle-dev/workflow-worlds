@@ -1,5 +1,15 @@
 # @workflow-worlds/redis
 
+## 0.2.2
+
+### Patch Changes
+
+- [#29](https://github.com/mizzle-dev/workflow-worlds/pull/29) [`67def3c`](https://github.com/mizzle-dev/workflow-worlds/commit/67def3c1468d0df1b8c46336bfd4459f7f065f59) Thanks [@dustintownsend](https://github.com/dustintownsend)! - Fix webhook e2e regressions where webhook endpoints could return 404 in Redis and Turso worlds.
+
+  - Redis: avoid closing stream readers before final persisted chunks are drained.
+  - Turso: avoid closing stream readers during initial replay before buffered chunks are delivered.
+  - Turso: normalize hook metadata nulls to undefined to preserve expected hydration behavior.
+
 ## 0.2.1
 
 ### Patch Changes
