@@ -95,6 +95,7 @@ export interface TursoWorldConfig {
 
 // Module-level client cache to reuse connections
 const clientCache = new Map<string, Client>();
+const clientPragmaInit = new Map<string, Promise<void>>();
 
 /**
  * Gets or creates a Turso client for the given URL.
@@ -109,6 +110,34 @@ function getOrCreateClient(url: string, authToken?: string): Client {
     clientCache.set(cacheKey, client);
   }
   return clientCache.get(cacheKey)!;
+}
+
+/**
+ * Configure SQLite pragmas for local file databases.
+ * busy_timeout is per-connection, so this must run for runtime clients too.
+ */
+async function configureLocalSqlitePragmas(
+  cacheKey: string,
+  client: Client,
+  databaseUrl: string
+): Promise<void> {
+  if (!databaseUrl.startsWith('file:')) {
+    return;
+  }
+
+  const existing = clientPragmaInit.get(cacheKey);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const init = (async () => {
+    await client.execute('PRAGMA journal_mode = WAL');
+    await client.execute('PRAGMA busy_timeout = 5000');
+  })();
+
+  clientPragmaInit.set(cacheKey, init);
+  await init;
 }
 
 /**
@@ -140,6 +169,8 @@ export function createWorld(config: TursoWorldConfig = {}): World {
       ? parseInt(process.env.WORKFLOW_CONCURRENCY, 10)
       : 20);
 
+  const clientCacheKey = `${databaseUrl}:${authToken ?? ''}`;
+
   // Get or create client
   const client = getOrCreateClient(databaseUrl, authToken);
 
@@ -156,6 +187,8 @@ export function createWorld(config: TursoWorldConfig = {}): World {
   function ensureInitialized() {
     if (!initPromise) {
       initPromise = (async () => {
+        await configureLocalSqlitePragmas(clientCacheKey, client, databaseUrl);
+
         // Note: Schema must be created by running: pnpm exec workflow-turso-setup
         // Create components
         const storage = createStorage({ client });
