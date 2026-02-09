@@ -209,7 +209,7 @@ function toHook(row: HookRow, specVersion?: number): Hook {
     hookId: row.hookId,
     runId: row.runId,
     token: row.token,
-    metadata: row.metadata,
+    metadata: row.metadata ?? undefined,
     ownerId: row.ownerId,
     projectId: row.projectId,
     environment: row.environment,

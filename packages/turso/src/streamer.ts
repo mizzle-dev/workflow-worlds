@@ -174,6 +174,7 @@ export function createStreamer(config: StreamerConfig): Streamer {
           // Buffer for chunks that arrive during initial load
           const bufferedEventChunks: StreamChunk[] = [];
           let isLoadingFromStorage = true;
+          let closeRequested = false;
 
           // Handler for new chunks (real-time)
           const chunkHandler = (chunk: StreamChunk) => {
@@ -202,6 +203,12 @@ export function createStreamer(config: StreamerConfig): Streamer {
 
           // Handler for stream close
           const closeHandler = () => {
+            if (isLoadingFromStorage) {
+              // Don't close immediately during initial load. A close event can
+              // race ahead of buffered chunk delivery.
+              closeRequested = true;
+              return;
+            }
             cleanup?.();
             try {
               controller.close();
@@ -272,6 +279,11 @@ export function createStreamer(config: StreamerConfig): Streamer {
                 if (chunk.data.byteLength > 0) {
                   controller.enqueue(Uint8Array.from(chunk.data));
                 }
+              }
+
+              if (closeRequested) {
+                cleanup?.();
+                controller.close();
               }
 
             } catch (error) {

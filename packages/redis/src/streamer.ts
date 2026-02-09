@@ -161,6 +161,7 @@ export async function createStreamer(options: {
             eof: boolean;
           }> = [];
           let isClosed = false;
+          let closeSignalReceived = false;
 
           // Handler for pub/sub messages
           const messageHandler = (channel: string, message: string) => {
@@ -170,15 +171,9 @@ export async function createStreamer(options: {
               const parsed = JSON.parse(message);
 
               if (parsed.type === 'close') {
-                if (!isClosed) {
-                  isClosed = true;
-                  cleanup();
-                  try {
-                    controller.close();
-                  } catch {
-                    // Ignore if already closed
-                  }
-                }
+                // A close signal can race ahead of chunk polling. Delay closure
+                // until we have drained persisted entries (including final chunk).
+                closeSignalReceived = true;
               }
               // For chunk notifications, we'll poll for new data
             } catch {
@@ -319,7 +314,7 @@ export async function createStreamer(options: {
               if (!newEntries || newEntries.length === 0) {
                 // Check if stream is now closed
                 const nowClosed = await redis.get(closedKey);
-                if (nowClosed === '1' && !isClosed) {
+                if ((closeSignalReceived || nowClosed === '1') && !isClosed) {
                   isClosed = true;
                   clearInterval(pollInterval);
                   cleanup();
