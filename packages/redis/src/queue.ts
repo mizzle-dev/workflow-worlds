@@ -10,6 +10,7 @@
  */
 
 import { Queue, Worker, Job, type ConnectionOptions, type JobsOptions } from 'bullmq';
+import type { ConnectionOptions as TlsConnectionOptions } from 'tls';
 import type {
   Queue as WorkflowQueue,
   MessageId,
@@ -30,6 +31,11 @@ export interface QueueConfig {
    * Default: http://localhost:${PORT}
    */
   baseUrl?: string;
+
+  /**
+   * TLS options for the Redis connection.
+   */
+  tls?: TlsConnectionOptions;
 
   /**
    * Maximum concurrent message processing.
@@ -88,6 +94,11 @@ export async function createQueue(options: {
   const connection: ConnectionOptions = {
     url: redisUrl,
     maxRetriesPerRequest: null,
+    tls: config.tls ? {
+      key: config.tls.key,
+      cert: config.tls.cert,
+      ca: config.tls.ca,
+    } : undefined,
   };
 
   // Create BullMQ queues for workflow and step execution
