@@ -1,5 +1,11 @@
 # @workflow-worlds/mongodb
 
+## 0.2.2
+
+### Patch Changes
+
+- [#35](https://github.com/mizzle-dev/workflow-worlds/pull/35) [`4c2fed0`](https://github.com/mizzle-dev/workflow-worlds/commit/4c2fed088d4e1002a6364c2cf5894ad4ca47a98d) Thanks [@dustintownsend](https://github.com/dustintownsend)! - chore: add release changeset
+
 ## 0.2.1
 
 ### Patch Changes

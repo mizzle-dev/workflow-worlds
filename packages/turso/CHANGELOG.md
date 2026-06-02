@@ -1,5 +1,11 @@
 # @workflow-worlds/turso
 
+## 0.2.3
+
+### Patch Changes
+
+- [#32](https://github.com/mizzle-dev/workflow-worlds/pull/32) [`483d576`](https://github.com/mizzle-dev/workflow-worlds/commit/483d5763b52eca176554566d84f0b5d233863b73) Thanks [@dustintownsend](https://github.com/dustintownsend)! - Configure runtime local SQLite connections with `PRAGMA journal_mode = WAL` and `PRAGMA busy_timeout = 5000` to reduce transient `SQLITE_BUSY` lock failures under e2e workloads.
+
 ## 0.2.2
 
 ### Patch Changes
