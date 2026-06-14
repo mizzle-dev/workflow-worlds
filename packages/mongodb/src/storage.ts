@@ -81,11 +81,24 @@ function isMongoDuplicateKeyError(error: unknown): boolean {
   );
 }
 
+function bufferToUint8Array(buffer: Buffer): Uint8Array {
+  // Create a new Uint8Array that shares the same underlying ArrayBuffer
+  // This ensures the result is a true Uint8Array, not a Buffer
+  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+}
+
 function stripUndefined<T>(doc: T): T {
   if (doc === null || doc === undefined) return doc;
   if (typeof doc !== 'object') return doc;
+  // Check for MongoDB Binary type first (has _bsontype marker)
+  if (isMongoBinaryLike(doc)) {
+    return bufferToUint8Array(doc.value()) as T;
+  }
+  // Convert Buffer to Uint8Array for browser compatibility
+  if (Buffer.isBuffer(doc)) {
+    return bufferToUint8Array(doc) as T;
+  }
   if (ArrayBuffer.isView(doc)) return doc;
-  if (isMongoBinaryLike(doc)) return doc.value() as T;
   if (Array.isArray(doc)) return doc.map(stripUndefined) as T;
   if (doc instanceof Date) return doc as T;
 
@@ -103,8 +116,15 @@ function stripUndefined<T>(doc: T): T {
 function cleanMongoDoc<T>(doc: T): T {
   if (doc === null || doc === undefined) return doc;
   if (typeof doc !== 'object') return doc;
+  // Check for MongoDB Binary type first (has _bsontype marker)
+  if (isMongoBinaryLike(doc)) {
+    return bufferToUint8Array(doc.value()) as T;
+  }
+  // Convert Buffer to Uint8Array for browser compatibility
+  if (Buffer.isBuffer(doc)) {
+    return bufferToUint8Array(doc) as T;
+  }
   if (ArrayBuffer.isView(doc)) return doc;
-  if (isMongoBinaryLike(doc)) return doc.value() as T;
   if (Array.isArray(doc)) return doc.map(cleanMongoDoc) as T;
   if (doc instanceof Date) return doc;
 
