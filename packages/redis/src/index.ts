@@ -24,6 +24,7 @@ import type {
   WorkflowRun,
   WorkflowRunWithoutData,
 } from '@workflow/world';
+import type { ConnectionOptions } from 'tls';
 import { Redis } from 'ioredis';
 import type { Redis as RedisClient } from 'ioredis';
 import { createQueue, type QueueConfig } from './queue.js';
@@ -34,7 +35,7 @@ import { debug } from './utils.js';
 // Module-level client cache to share connections across multiple createWorld() calls
 const clientCache = new Map<string, RedisClient>();
 
-function getOrCreateClient(redisUrl: string): RedisClient {
+function getOrCreateClient(redisUrl: string, tls?: ConnectionOptions): RedisClient {
   const existing = clientCache.get(redisUrl);
   if (existing) {
     return existing;
@@ -42,6 +43,7 @@ function getOrCreateClient(redisUrl: string): RedisClient {
   const client = new Redis(redisUrl, {
     maxRetriesPerRequest: null, // Required for BullMQ
     enableReadyCheck: false, // Faster connection
+    tls,
   });
   clientCache.set(redisUrl, client);
 
@@ -71,6 +73,11 @@ export interface RedisWorldConfig extends QueueConfig, StreamerConfig, RedisStor
   redisUrl?: string;
 
   /**
+   * TLS options for the Redis connection.
+   */
+  tls?: ConnectionOptions;
+
+  /**
    * Pre-existing ioredis client to use.
    * If provided, redisUrl is ignored.
    */
@@ -91,7 +98,7 @@ export function createWorld(config: RedisWorldConfig = {}): World {
     ?? 'redis://localhost:6379';
 
   // Use provided client or create/get cached one
-  const client = config.client ?? getOrCreateClient(redisUrl);
+  const client = config.client ?? getOrCreateClient(redisUrl, config.tls);
 
   debug('Creating world with:', {
     redisUrl: redisUrl.replace(/\/\/[^:]*:[^@]*@/, '//***:***@'), // Hide credentials

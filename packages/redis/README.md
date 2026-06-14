@@ -48,8 +48,15 @@ interface RedisWorldConfig {
   // Redis connection string
   // Default: process.env.WORKFLOW_REDIS_URI ?? 'redis://localhost:6379'
   redisUrl?: string;
+  
+  // TLS options for Redis connection
+  tls?: {
+    key?: string | Buffer<ArrayBufferLike> | (string | Buffer<ArrayBufferLike> | KeyObject)[];
+    cert?: string | Buffer<ArrayBufferLike> | (string | Buffer<ArrayBufferLike>)[];
+    ca?: string | Buffer<ArrayBufferLike> | (string | Buffer<ArrayBufferLike>)[];
+  };
 
-  // Pre-existing ioredis client (if provided, redisUrl is ignored)
+  // Pre-existing ioredis client (if provided, redisUrl and tls are ignored)
   client?: Redis;
 
   // Key prefix for all Redis keys
