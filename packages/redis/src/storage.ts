@@ -4,96 +4,85 @@
  * This file implements the Storage interface using Redis data structures:
  * - Runs: Hash for document, Sorted Sets for indexes
  * - Steps: Hash with composite key, Sorted Set index by runId
- * - Events: Sorted Set with ULID scores for ordering
+ * - Events: per-run Hash of eventId -> event, a Sorted Set of eventIds scored
+ *   by position, and a per-run sequence counter
  * - Hooks: Hash with token lookup key
+ * - Waits: Hash per wait, Set index by runId
+ *
+ * Each `events.create()` reads the state it depends on, decides, and then
+ * commits through one guarded Lua script (see `commit.ts`) that re-checks
+ * that state, applies the entity writes and appends the event atomically. A
+ * guard that no longer holds writes nothing, and the create decides again from
+ * a fresh read.
  */
 
 import type {
-  Storage,
-  WorkflowRun,
-  Step,
-  Event,
-  Hook,
   AnyEventRequest,
   CreateEventParams,
-  CreateWorkflowRunRequest,
-  CreateStepRequest,
-  UpdateStepRequest,
+  Event,
   EventResult,
-  CreateHookRequest,
+  EventsResolveData,
+  Hook,
+  ListWorkflowRunsParams,
   PaginatedResponse,
+  ResolveData,
+  Step,
+  Storage,
+  Wait,
+  WorkflowRun,
 } from '@workflow/world';
 import {
+  ATTRIBUTE_MAX_PER_RUN,
+  AttributeValidationError,
+  applyAttributeChanges,
+  EVENT_ID_BODY_LENGTH,
+  EVENT_ID_PREFIX,
+  entityResolveData,
+  eventIdToSlot,
+  FIRST_EVENT_SLOT,
+  isChildEntityCreationEvent,
   isLegacySpecVersion,
+  isTerminalRunEventType,
+  isTerminalStepStatus,
+  isTerminalWorkflowRunStatus,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
+  stripEventDataRefs,
+  TERMINAL_STEP_STATUSES,
+  TERMINAL_WORKFLOW_RUN_STATUSES,
+  validateAttributeChanges,
+  validateUlidTimestamp,
 } from '@workflow/world';
-import { RunNotSupportedError, WorkflowAPIError } from '@workflow/errors';
-import { monotonicFactory } from 'ulid';
+import {
+  EntityConflictError,
+  HookNotFoundError,
+  RunExpiredError,
+  RunNotSupportedError,
+  TooEarlyError,
+  WorkflowRunNotFoundError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type { Redis } from 'ioredis';
+import { commit, type EventAppend, type Guard, type Op } from './commit.js';
 import {
   serializeForRedis,
   deserializeFromRedis,
   ulidToScore,
-  deepClone,
   toCbor,
   fromCbor,
+  generateUlid,
 } from './utils.js';
 
-const generateUlid = monotonicFactory();
 
-type UpdateWorkflowRunRequest = {
-  status?: WorkflowRun['status'];
-  output?: unknown;
-  error?: WorkflowRun['error'];
-  executionContext?: Record<string, unknown>;
-};
+/**
+ * How many times one create re-reads and re-decides after a guard it
+ * committed under stopped holding. Reached only under sustained contention on
+ * a single entity.
+ */
+const MAX_COMMIT_ATTEMPTS = 25;
 
-type ResolveDataParams = { resolveData?: 'none' | 'all' };
-
-type LegacyStorage = {
-  runs: {
-    create(
-      data: CreateWorkflowRunRequest & { specVersion?: number; runId?: string }
-    ): Promise<WorkflowRun>;
-    get(id: string, params?: ResolveDataParams): Promise<WorkflowRun>;
-    update(id: string, data: UpdateWorkflowRunRequest): Promise<WorkflowRun>;
-    list(params?: any): Promise<PaginatedResponse<WorkflowRun>>;
-  };
-  steps: {
-    create(
-      runId: string,
-      data: CreateStepRequest & { specVersion?: number }
-    ): Promise<Step>;
-    get(
-      runId: string | undefined,
-      stepId: string,
-      params?: ResolveDataParams
-    ): Promise<Step>;
-    update(runId: string, stepId: string, data: UpdateStepRequest): Promise<Step>;
-    list(params: any): Promise<PaginatedResponse<Step>>;
-  };
-  events: {
-    create(
-      runId: string,
-      data: AnyEventRequest,
-      params?: CreateEventParams
-    ): Promise<Event>;
-    list(params: any): Promise<PaginatedResponse<Event>>;
-    listByCorrelationId(params: any): Promise<PaginatedResponse<Event>>;
-  };
-  hooks: {
-    create(
-      runId: string,
-      data: CreateHookRequest & { specVersion?: number },
-      params?: ResolveDataParams
-    ): Promise<Hook>;
-    get(hookId: string, params?: ResolveDataParams): Promise<Hook>;
-    getByToken(token: string, params?: ResolveDataParams): Promise<Hook>;
-    list(params: any): Promise<PaginatedResponse<Hook>>;
-    dispose(hookId: string, params?: ResolveDataParams): Promise<Hook>;
-  };
-};
+const TERMINAL_RUN = [...TERMINAL_WORKFLOW_RUN_STATUSES] as string[];
+const TERMINAL_STEP = [...TERMINAL_STEP_STATUSES] as string[];
 
 /**
  * Configuration for Redis storage.
@@ -106,55 +95,42 @@ export interface RedisStorageConfig {
   keyPrefix?: string;
 }
 
-/**
- * Helper to filter data based on resolveData setting.
- */
-function filterRunData(
-  run: WorkflowRun,
-  resolveData: 'none' | 'all' = 'all'
-): WorkflowRun {
-  const cloned = deepClone(run);
+/** Signals that a guard failed and the create should decide again. */
+class Retry {}
+
+function filterRun(run: WorkflowRun, resolveData: ResolveData = 'all'): WorkflowRun {
   if (resolveData === 'none') {
-    return { ...cloned, input: undefined, output: undefined } as WorkflowRun;
+    return { ...run, input: undefined, output: undefined } as WorkflowRun;
   }
-  return cloned;
+  return run;
 }
 
-function filterStepData(step: Step, resolveData: 'none' | 'all' = 'all'): Step {
-  const cloned = deepClone(step);
+function filterStep(step: Step, resolveData: ResolveData = 'all'): Step {
   if (resolveData === 'none') {
-    return { ...cloned, input: undefined, output: undefined } as Step;
+    return { ...step, input: undefined, output: undefined } as Step;
   }
-  return cloned;
+  return step;
 }
 
-function filterEventData(
-  event: Event,
-  resolveData: 'none' | 'all' = 'all'
-): Event {
-  const cloned = deepClone(event);
+function filterHook(hook: Hook, resolveData: ResolveData = 'all'): Hook {
   if (resolveData === 'none') {
-    if ('eventData' in cloned) {
-      delete (cloned as Record<string, unknown>).eventData;
-    }
+    const { metadata: _metadata, ...rest } = hook;
+    return rest as Hook;
   }
-  return cloned;
+  return hook;
 }
 
-function filterHookData(hook: Hook, resolveData: 'none' | 'all' = 'all'): Hook {
-  const cloned = deepClone(hook);
+function filterEvent(event: Event, resolveData: EventsResolveData = 'all'): Event {
   if (resolveData === 'none') {
-    delete (cloned as Record<string, unknown>).metadata;
+    const { eventData: _eventData, ...rest } = event as Event & { eventData?: unknown };
+    return rest as Event;
   }
-  return cloned;
+  return stripEventDataRefs(event, resolveData);
 }
 
-function isTerminalRunStatus(status: WorkflowRun['status']): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
-}
-
-function isTerminalStepStatus(status: Step['status']): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
+/** Hash fields for an entity; `undefined` fields are left out. */
+function fieldsOf(entity: object): string[] {
+  return Object.entries(serializeForRedis(entity as Record<string, unknown>)).flat();
 }
 
 /**
@@ -178,592 +154,1071 @@ export async function createStorage(options: {
     // Steps
     step: (runId: string, stepId: string) => `${prefix}:steps:${runId}:${stepId}`,
     stepsIdxRun: (runId: string) => `${prefix}:steps:idx:run:${runId}`,
-    stepsIdxStepId: () => `${prefix}:steps:idx:stepId`,
 
-    // Events
-    eventsRun: (runId: string) => `${prefix}:events:${runId}`,
-    eventsIdxCorrelation: (correlationId: string) =>
-      `${prefix}:events:idx:correlation:${correlationId}`,
+    // Events, keyed by position within their run
+    eventsHash: (runId: string) => `${prefix}:ev:${runId}`,
+    eventsIdx: (runId: string) => `${prefix}:ev:idx:${runId}`,
+    eventsSeq: (runId: string) => `${prefix}:ev:seq:${runId}`,
+    eventsCorrelation: (runId: string, correlationId: string) =>
+      `${prefix}:ev:corr:${runId}:${correlationId}`,
+    // Events written before positional IDs: a Sorted Set of whole events.
+    legacyEventsRun: (runId: string) => `${prefix}:events:${runId}`,
 
     // Hooks
+    hookPrefix: () => `${prefix}:hooks:`,
     hook: (hookId: string) => `${prefix}:hooks:${hookId}`,
+    hookTokenPrefix: () => `${prefix}:hooks:token:`,
     hookToken: (token: string) => `${prefix}:hooks:token:${token}`,
     hooksIdxRun: (runId: string) => `${prefix}:hooks:idx:run:${runId}`,
+
+    // Waits
+    waitPrefix: (runId: string) => `${prefix}:waits:${runId}:`,
+    wait: (runId: string, waitId: string) => `${prefix}:waits:${runId}:${waitId}`,
+    waitsIdxRun: (runId: string) => `${prefix}:waits:idx:run:${runId}`,
   };
 
-  const legacyStorage: LegacyStorage = {
-    // =========================================================================
-    // RUNS STORAGE
-    // =========================================================================
-    runs: {
-      async create(data: CreateWorkflowRunRequest & { specVersion?: number; runId?: string }): Promise<WorkflowRun> {
-        const runId = data.runId ?? `wrun_${generateUlid()}`;
-        const now = new Date();
-        const score = ulidToScore(runId);
+  async function readHash<T>(key: string): Promise<T | null> {
+    return deserializeFromRedis<T>(await redis.hgetall(key));
+  }
 
-        const run: WorkflowRun = {
+  async function readRun(runId: string): Promise<WorkflowRun | null> {
+    const run = await readHash<WorkflowRun>(keys.run(runId));
+    if (run) run.attributes = run.attributes ?? {};
+    return run;
+  }
+
+  const readStep = (runId: string, stepId: string) =>
+    readHash<Step>(keys.step(runId, stepId));
+  const readHook = (hookId: string) => readHash<Hook>(keys.hook(hookId));
+  const readWait = (runId: string, waitId: string) =>
+    readHash<Wait>(keys.wait(runId, waitId));
+
+  function decodeEvent(runId: string, eventId: string, body: string | null): Event | null {
+    const decoded = fromCbor<Record<string, unknown>>(body);
+    if (!decoded) return null;
+    return { ...decoded, runId, eventId } as Event;
+  }
+
+  async function readEvents(runId: string, eventIds: string[]): Promise<Event[]> {
+    if (eventIds.length === 0) return [];
+    const bodies = await redis.hmget(keys.eventsHash(runId), ...eventIds);
+    const events: Event[] = [];
+    eventIds.forEach((eventId, i) => {
+      const event = decodeEvent(runId, eventId, bodies[i]);
+      if (event) events.push(event);
+    });
+    return events;
+  }
+
+  function eventAppend(
+    runId: string,
+    body: Record<string, unknown>,
+    correlationId?: string
+  ): EventAppend {
+    return {
+      seq: keys.eventsSeq(runId),
+      hash: keys.eventsHash(runId),
+      idx: keys.eventsIdx(runId),
+      corr: correlationId ? keys.eventsCorrelation(runId, correlationId) : undefined,
+      prefix: EVENT_ID_PREFIX,
+      width: EVENT_ID_BODY_LENGTH,
+      body: toCbor(body),
+    };
+  }
+
+  /**
+   * Commits a plan, or throws {@link Retry} when a guard no longer holds.
+   * Returns the committed event when the plan appended one.
+   */
+  async function commitOrRetry(
+    runId: string,
+    plan: { guards: Guard[]; ops: Op[]; event?: EventAppend },
+    eventBody?: Record<string, unknown>
+  ): Promise<Event | undefined> {
+    const result = await commit(redis, plan);
+    if (!result.ok) throw new Retry();
+    if (!result.eventId || !eventBody) return undefined;
+    return { ...eventBody, runId, eventId: result.eventId } as Event;
+  }
+
+  /**
+   * The report half of bump-and-report: the events occupying the positions
+   * between the one the writer expected (`eventCount + 1`) and the one its
+   * write landed on. Every lower position was committed by a script that ran
+   * before this one, so the whole span is readable.
+   */
+  async function reportSkipped(
+    runId: string,
+    committedEventId: string,
+    eventCount: number | undefined,
+    resolveData: EventsResolveData
+  ): Promise<{ events: Event[]; cursor: null; hasMore: false } | undefined> {
+    if (eventCount === undefined) return undefined;
+    const committedSlot = eventIdToSlot(committedEventId);
+    if (committedSlot === null || committedSlot <= eventCount + 1) return undefined;
+    const ids = await redis.zrangebyscore(
+      keys.eventsIdx(runId),
+      `(${Math.max(eventCount, FIRST_EVENT_SLOT - 1)}`,
+      `(${committedSlot}`
+    );
+    const events = await readEvents(runId, ids);
+    return {
+      events: events.map((event) => filterEvent(event, resolveData)),
+      cursor: null,
+      hasMore: false,
+    };
+  }
+
+  function runStatusOps(run: WorkflowRun, nextStatus: string): Op[] {
+    if (run.status === nextStatus) return [];
+    return [
+      { o: 'zrem', k: keys.runsIdxStatus(run.status), m: run.runId },
+      { o: 'zadd', k: keys.runsIdxStatus(nextStatus), s: ulidToScore(run.runId), m: run.runId },
+    ];
+  }
+
+  function newRunOps(run: WorkflowRun): Op[] {
+    const score = ulidToScore(run.runId);
+    return [
+      { o: 'hset', k: keys.run(run.runId), fields: fieldsOf(run) },
+      { o: 'zadd', k: keys.runsIdxAll(), s: score, m: run.runId },
+      { o: 'zadd', k: keys.runsIdxWorkflow(run.workflowName), s: score, m: run.runId },
+      { o: 'zadd', k: keys.runsIdxStatus(run.status), s: score, m: run.runId },
+    ];
+  }
+
+  function newStepOps(step: Step): Op[] {
+    return [
+      { o: 'hset', k: keys.step(step.runId, step.stepId), fields: fieldsOf(step) },
+      {
+        o: 'zadd',
+        k: keys.stepsIdxRun(step.runId),
+        s: step.createdAt.getTime(),
+        m: step.stepId,
+      },
+    ];
+  }
+
+  /**
+   * Pre-event-sourcing runs (spec version 1) accept only the events an old
+   * runtime may still send them: cancellation and wake-ups.
+   */
+  async function handleLegacyEvent(
+    run: WorkflowRun,
+    data: AnyEventRequest,
+    resolveData: EventsResolveData
+  ): Promise<EventResult> {
+    const now = new Date();
+    if (data.eventType === 'run_cancelled') {
+      await commit(redis, {
+        guards: [],
+        ops: [
+          {
+            o: 'hset',
+            k: keys.run(run.runId),
+            fields: fieldsOf({ status: 'cancelled', completedAt: now, updatedAt: now }),
+          },
+          ...runStatusOps(run, 'cancelled'),
+          {
+            o: 'drop_hooks',
+            idx: keys.hooksIdxRun(run.runId),
+            hookPrefix: keys.hookPrefix(),
+            tokenPrefix: keys.hookTokenPrefix(),
+          },
+        ],
+      });
+      const updated = await readRun(run.runId);
+      return { run: updated ? filterRun(updated, entityResolveData(resolveData)) : undefined };
+    }
+    if (data.eventType === 'wait_completed' || data.eventType === 'hook_received') {
+      const body = {
+        eventType: data.eventType,
+        correlationId: data.correlationId,
+        eventData: 'eventData' in data ? data.eventData : undefined,
+        specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
+        createdAt: now,
+      };
+      const event = await commitOrRetry(
+        run.runId,
+        { guards: [], ops: [], event: eventAppend(run.runId, body, data.correlationId) },
+        body
+      );
+      return { event: filterEvent(event!, resolveData) };
+    }
+    throw new EntityConflictError(`Event '${data.eventType}' is not supported for legacy runs`);
+  }
+
+  async function createRunEvent(
+    runId: string | null,
+    data: Extract<AnyEventRequest, { eventType: 'run_created' }>,
+    resolveData: EventsResolveData
+  ): Promise<EventResult> {
+    const effectiveRunId = runId || `wrun_${generateUlid()}`;
+    if (runId) {
+      const validationError = validateUlidTimestamp(effectiveRunId, 'wrun_');
+      if (validationError) {
+        throw new WorkflowWorldError(validationError, { status: 400 });
+      }
+    }
+    const eventData = data.eventData;
+    validateAttributeChanges(
+      Object.entries(eventData.attributes ?? {}).map(([key, value]) => ({ key, value })),
+      { allowReservedAttributes: eventData.allowReservedAttributes === true }
+    );
+    const now = new Date();
+    const specVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
+    const run: WorkflowRun = {
+      runId: effectiveRunId,
+      deploymentId: eventData.deploymentId,
+      workflowName: eventData.workflowName,
+      status: 'pending',
+      specVersion,
+      input: eventData.input,
+      executionContext: eventData.executionContext,
+      attributes: eventData.attributes ?? {},
+      createdAt: now,
+      updatedAt: now,
+    } as WorkflowRun;
+    const {
+      dynamicWorkflowCode: _dynamicWorkflowCode,
+      dynamicWorkflowCodeRef: _dynamicWorkflowCodeRef,
+      ...storedEventData
+    } = eventData;
+    const body = {
+      eventType: 'run_created',
+      correlationId: data.correlationId,
+      eventData: storedEventData,
+      specVersion,
+      createdAt: now,
+    };
+    const result = await commit(redis, {
+      guards: [
+        { t: 'absent', k: keys.run(effectiveRunId) },
+        { t: 'absent', k: keys.eventsSeq(effectiveRunId) },
+      ],
+      ops: newRunOps(run),
+      event: eventAppend(effectiveRunId, body, data.correlationId),
+    });
+    if (!result.ok) {
+      throw new EntityConflictError(`Workflow run "${effectiveRunId}" already exists`);
+    }
+    const event = { ...body, runId: effectiveRunId, eventId: result.eventId! } as Event;
+    return {
+      event: filterEvent(event, resolveData),
+      run: filterRun(run, entityResolveData(resolveData)),
+    };
+  }
+
+  /**
+   * One decision for one event: read, validate, commit under guards that hold
+   * the decision's premises. Throws {@link Retry} when they stop holding.
+   */
+  async function attemptCreate(
+    runId: string,
+    data: AnyEventRequest,
+    params: CreateEventParams | undefined
+  ): Promise<EventResult> {
+    const resolveData: EventsResolveData = params?.resolveData ?? 'all';
+    const entityRD = entityResolveData(resolveData);
+    const specVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    let currentRun = await readRun(runId);
+
+    // Resilient start: a run_started for a run whose run_created never landed
+    // carries what it takes to create the run here.
+    if (data.eventType === 'run_started' && !currentRun && data.eventData) {
+      const startData = data.eventData;
+      if (startData.deploymentId && startData.workflowName && startData.input !== undefined) {
+        try {
+          await createRunEvent(
+            runId,
+            {
+              eventType: 'run_created',
+              specVersion,
+              eventData: {
+                deploymentId: startData.deploymentId,
+                workflowName: startData.workflowName,
+                input: startData.input,
+                executionContext: startData.executionContext,
+                attributes: startData.attributes,
+                allowReservedAttributes: startData.allowReservedAttributes,
+                encryptionPublicKey: startData.encryptionPublicKey,
+              },
+            },
+            resolveData
+          );
+        } catch (error) {
+          if (!EntityConflictError.is(error)) throw error;
+        }
+        currentRun = await readRun(runId);
+      }
+    }
+
+    if (!currentRun) {
+      throw new WorkflowRunNotFoundError(runId);
+    }
+    if (requiresNewerWorld(currentRun.specVersion)) {
+      throw new RunNotSupportedError(currentRun.specVersion!, SPEC_VERSION_CURRENT);
+    }
+    if (isLegacySpecVersion(currentRun.specVersion)) {
+      return handleLegacyEvent(currentRun, data, resolveData);
+    }
+    if ((await redis.exists(keys.eventsSeq(runId))) === 0) {
+      // Written before positional event IDs: its log cannot be extended.
+      if (data.eventType === 'run_cancelled') {
+        return handleLegacyEvent(currentRun, data, resolveData);
+      }
+      throw new EntityConflictError(
+        `Run "${runId}" predates positional event IDs; finish or cancel it on the World version that created it`
+      );
+    }
+
+    const runKey = keys.run(runId);
+    const runIsTerminal = isTerminalWorkflowRunStatus(currentRun.status);
+    const lazyStepStart =
+      data.eventType === 'step_started' && isChildEntityCreationEvent(data);
+    const runAlive: Guard = { t: 'status_not_in', k: runKey, v: TERMINAL_RUN };
+
+    const body: Record<string, unknown> = {
+      eventType: data.eventType,
+      correlationId: data.correlationId,
+      eventData: 'eventData' in data ? data.eventData : undefined,
+      specVersion,
+      createdAt: now,
+    };
+
+    const finish = async (
+      event: Event,
+      entities: Omit<EventResult, 'event'> = {}
+    ): Promise<EventResult> => {
+      const skipped = await reportSkipped(runId, event.eventId, params?.eventCount, resolveData);
+      return { ...entities, event: filterEvent(event, resolveData), ...(skipped ?? {}) } as EventResult;
+    };
+
+    // =========================================================================
+    // Terminal run guards
+    // =========================================================================
+    if (runIsTerminal) {
+      if (data.eventType === 'run_cancelled' && currentRun.status === 'cancelled') {
+        const event = await commitOrRetry(
           runId,
-          deploymentId: data.deploymentId,
-          status: 'pending',
-          workflowName: data.workflowName,
-          specVersion: (data as { specVersion?: number }).specVersion,
-          input: (data.input ?? []) as unknown[],
-          output: undefined,
-          error: undefined,
-          executionContext: data.executionContext as
-            | Record<string, unknown>
-            | undefined,
-          startedAt: undefined,
-          completedAt: undefined,
-          createdAt: now,
-          updatedAt: now,
-        };
+          {
+            guards: [{ t: 'status_in', k: runKey, v: ['cancelled'] }],
+            ops: [],
+            event: eventAppend(runId, body),
+          },
+          body
+        );
+        return finish(event!, { run: filterRun(currentRun, entityRD) });
+      }
+      if (data.eventType === 'run_started') {
+        throw new RunExpiredError(
+          `Workflow run "${runId}" is already in terminal state "${currentRun.status}"`,
+          runId,
+          currentRun.status
+        );
+      }
+      if (isTerminalRunEventType(data.eventType)) {
+        throw new EntityConflictError(
+          `Cannot transition run from terminal state "${currentRun.status}"`
+        );
+      }
+      if (
+        data.eventType === 'step_created' ||
+        data.eventType === 'hook_created' ||
+        data.eventType === 'wait_created' ||
+        lazyStepStart
+      ) {
+        throw new EntityConflictError(
+          `Cannot create new entities on terminal run in state "${currentRun.status}"`
+        );
+      }
+      if (data.eventType === 'attr_set') {
+        throw new EntityConflictError(
+          `Cannot set attributes on run in terminal state "${currentRun.status}"`
+        );
+      }
+    }
 
-        const serialized = serializeForRedis(run as unknown as Record<string, unknown>);
-
-        // Use pipeline for atomic operation
-        const pipeline = redis.pipeline();
-        pipeline.hset(keys.run(runId), serialized);
-        pipeline.zadd(keys.runsIdxAll(), score, runId);
-        pipeline.zadd(keys.runsIdxWorkflow(run.workflowName), score, runId);
-        pipeline.zadd(keys.runsIdxStatus(run.status), score, runId);
-        await pipeline.exec();
-
-        return run;
-      },
-
-      async get(id, params): Promise<WorkflowRun> {
-        const data = await redis.hgetall(keys.run(id));
-        const run = deserializeFromRedis<WorkflowRun>(data);
-
-        if (!run) {
-          throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
+    switch (data.eventType) {
+      // =======================================================================
+      // Run lifecycle
+      // =======================================================================
+      case 'run_started': {
+        if (currentRun.status === 'running') {
+          return { run: filterRun(currentRun, entityRD) } as EventResult;
         }
-
-        return filterRunData(run, params?.resolveData);
-      },
-
-      async update(id, data: UpdateWorkflowRunRequest): Promise<WorkflowRun> {
-        const existingData = await redis.hgetall(keys.run(id));
-        const existing = deserializeFromRedis<WorkflowRun>(existingData);
-
-        if (!existing) {
-          throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
-        }
-
-        const now = new Date();
-        const oldStatus = existing.status;
-        const updated: WorkflowRun = {
-          ...existing,
-          ...data,
+        const run = {
+          ...currentRun,
+          status: 'running',
+          startedAt: currentRun.startedAt ?? now,
           updatedAt: now,
         } as WorkflowRun;
-
-        // Only set startedAt the first time status becomes 'running'
-        if (data.status === 'running' && !updated.startedAt) {
-          updated.startedAt = now;
-        }
-
-        // Set completedAt on terminal states
-        const isTerminal =
-          data.status === 'completed' ||
-          data.status === 'failed' ||
-          data.status === 'cancelled';
-
-        if (isTerminal) {
-          updated.completedAt = now;
-        }
-
-        const serialized = serializeForRedis(updated as unknown as Record<string, unknown>);
-        const score = ulidToScore(id);
-
-        const pipeline = redis.pipeline();
-        pipeline.hset(keys.run(id), serialized);
-
-        // Update status index if changed
-        if (data.status && data.status !== oldStatus) {
-          pipeline.zrem(keys.runsIdxStatus(oldStatus), id);
-          pipeline.zadd(keys.runsIdxStatus(data.status), score, id);
-        }
-
-        // Clean up hooks on terminal status
-        if (isTerminal) {
-          const hookIds = await redis.smembers(keys.hooksIdxRun(id));
-          for (const hookId of hookIds) {
-            const hookData = await redis.hgetall(keys.hook(hookId));
-            const hook = deserializeFromRedis<Hook>(hookData);
-            if (hook) {
-              pipeline.del(keys.hook(hookId));
-              pipeline.del(keys.hookToken(hook.token));
-            }
-          }
-          pipeline.del(keys.hooksIdxRun(id));
-        }
-
-        await pipeline.exec();
-        return updated;
-      },
-
-      async list(params): Promise<PaginatedResponse<WorkflowRun>> {
-        const sortOrder = params?.pagination?.sortOrder ?? 'desc';
-        const limit = params?.pagination?.limit ?? 100;
-        const cursor = params?.pagination?.cursor;
-
-        // Determine which index to use
-        let indexKey: string;
-        if (params?.workflowName && params?.status) {
-          // Need to intersect - use workflow index and filter by status
-          indexKey = keys.runsIdxWorkflow(params.workflowName);
-        } else if (params?.workflowName) {
-          indexKey = keys.runsIdxWorkflow(params.workflowName);
-        } else if (params?.status) {
-          indexKey = keys.runsIdxStatus(params.status);
-        } else {
-          indexKey = keys.runsIdxAll();
-        }
-
-        // Get cursor score if provided
-        let cursorScore: number | undefined;
-        if (cursor) {
-          const score = await redis.zscore(indexKey, cursor);
-          if (score) {
-            cursorScore = Number(score);
-          }
-        }
-
-        // Fetch runIds using ZRANGEBYSCORE or ZREVRANGEBYSCORE
-        let runIds: string[];
-        if (sortOrder === 'desc') {
-          if (cursorScore !== undefined) {
-            runIds = await redis.zrevrangebyscore(
-              indexKey,
-              `(${cursorScore}`,
-              '-inf',
-              'LIMIT',
-              0,
-              limit + 1
-            );
-          } else {
-            runIds = await redis.zrevrangebyscore(
-              indexKey,
-              '+inf',
-              '-inf',
-              'LIMIT',
-              0,
-              limit + 1
-            );
-          }
-        } else {
-          if (cursorScore !== undefined) {
-            runIds = await redis.zrangebyscore(
-              indexKey,
-              `(${cursorScore}`,
-              '+inf',
-              'LIMIT',
-              0,
-              limit + 1
-            );
-          } else {
-            runIds = await redis.zrangebyscore(
-              indexKey,
-              '-inf',
-              '+inf',
-              'LIMIT',
-              0,
-              limit + 1
-            );
-          }
-        }
-
-        const hasMore = runIds.length > limit;
-        const resultIds = runIds.slice(0, limit);
-
-        if (resultIds.length === 0) {
-          return { data: [], cursor: null, hasMore: false };
-        }
-
-        // Fetch full run data
-        const pipeline = redis.pipeline();
-        for (const runId of resultIds) {
-          pipeline.hgetall(keys.run(runId));
-        }
-        const results = await pipeline.exec();
-
-        let data = results
-          ?.filter(([err, val]) => !err && val && Object.keys(val as object).length > 0)
-          .map(([, val]) => deserializeFromRedis<WorkflowRun>(val as Record<string, string>)!)
-          .filter((r): r is WorkflowRun => r !== null) ?? [];
-
-        // Filter by status if we used workflow index and also need status filter
-        if (params?.status && params?.workflowName) {
-          data = data.filter((r) => r.status === params.status);
-        }
-
-        const nextCursor =
-          hasMore && data.length > 0 ? data[data.length - 1]?.runId : null;
-
-        return {
-          data: data.map((r) => filterRunData(r, params?.resolveData)),
-          cursor: nextCursor ?? null,
-          hasMore,
-        };
-      },
-
-    },
-
-    // =========================================================================
-    // STEPS STORAGE
-    // =========================================================================
-    steps: {
-      async create(runId, data: CreateStepRequest): Promise<Step> {
-        const now = new Date();
-        const score = now.getTime();
-
-        const step: Step = {
+        const startedBody = { ...body, eventData: undefined };
+        const event = await commitOrRetry(
           runId,
-          stepId: data.stepId,
-          stepName: data.stepName,
-          status: 'pending',
-          input: data.input as unknown[],
-          output: undefined,
-          error: undefined,
-          attempt: 0,
-          startedAt: undefined,
-          completedAt: undefined,
-          createdAt: now,
-          updatedAt: now,
-          specVersion: (data as { specVersion?: number }).specVersion,
-        };
+          {
+            guards: [{ t: 'status_in', k: runKey, v: ['pending'] }],
+            ops: [
+              {
+                o: 'hset',
+                k: runKey,
+                fields: fieldsOf({ status: run.status, startedAt: run.startedAt, updatedAt: now }),
+              },
+              ...runStatusOps(currentRun, 'running'),
+            ],
+            event: eventAppend(runId, startedBody),
+          },
+          startedBody
+        );
+        return finish(event!, { run: filterRun(run, entityRD) });
+      }
 
-        const serialized = serializeForRedis(step as unknown as Record<string, unknown>);
-
-        const pipeline = redis.pipeline();
-        pipeline.hset(keys.step(runId, data.stepId), serialized);
-        pipeline.zadd(keys.stepsIdxRun(runId), score, data.stepId);
-        // Also index by stepId for lookups without runId
-        pipeline.hset(keys.stepsIdxStepId(), data.stepId, runId);
-        await pipeline.exec();
-
-        return step;
-      },
-
-      async get(runId, stepId, params): Promise<Step> {
-        let actualRunId = runId;
-
-        if (!actualRunId) {
-          // Search for stepId in the global index
-          const foundRunId = await redis.hget(keys.stepsIdxStepId(), stepId);
-          if (!foundRunId) {
-            throw new WorkflowAPIError(`Step not found: ${stepId}`, { status: 404 });
-          }
-          actualRunId = foundRunId;
+      case 'run_completed':
+      case 'run_failed':
+      case 'run_cancelled': {
+        const status =
+          data.eventType === 'run_completed'
+            ? 'completed'
+            : data.eventType === 'run_failed'
+              ? 'failed'
+              : 'cancelled';
+        const changes: Record<string, unknown> = { status, completedAt: now, updatedAt: now };
+        if (data.eventType === 'run_completed') changes.output = data.eventData.output;
+        if (data.eventType === 'run_failed') {
+          changes.error = data.eventData.error;
+          changes.errorCode = data.eventData.errorCode;
         }
-
-        const data = await redis.hgetall(keys.step(actualRunId, stepId));
-        const step = deserializeFromRedis<Step>(data);
-
-        if (!step) {
-          throw new WorkflowAPIError(`Step not found: ${stepId}`, { status: 404 });
-        }
-
-        return filterStepData(step, params?.resolveData);
-      },
-
-      async update(runId, stepId, data: UpdateStepRequest): Promise<Step> {
-        const existingData = await redis.hgetall(keys.step(runId, stepId));
-        const existing = deserializeFromRedis<Step>(existingData);
-
-        if (!existing) {
-          throw new WorkflowAPIError(`Step not found: ${stepId}`, { status: 404 });
-        }
-
-        const now = new Date();
-        const updated: Step = {
-          ...existing,
-          ...data,
-          updatedAt: now,
-        };
-
-        // Set startedAt only once when status becomes 'running'
-        if (data.status === 'running' && !updated.startedAt) {
-          updated.startedAt = now;
-        }
-
-        // Set completedAt on terminal states
-        if (data.status === 'completed' || data.status === 'failed') {
-          updated.completedAt = now;
-        }
-
-        const serialized = serializeForRedis(updated as unknown as Record<string, unknown>);
-        await redis.hset(keys.step(runId, stepId), serialized);
-
-        return updated;
-      },
-
-      async list(params): Promise<PaginatedResponse<Step>> {
-        const sortOrder = params.pagination?.sortOrder ?? 'desc';
-        const limit = params.pagination?.limit ?? 100;
-
-        // Get stepIds from the run index (fetch limit + 1 to determine hasMore)
-        let stepIds: string[];
-        if (sortOrder === 'desc') {
-          stepIds = await redis.zrevrange(keys.stepsIdxRun(params.runId), 0, limit);
-        } else {
-          stepIds = await redis.zrange(keys.stepsIdxRun(params.runId), 0, limit);
-        }
-
-        const hasMore = stepIds.length > limit;
-        const resultIds = stepIds.slice(0, limit);
-
-        if (resultIds.length === 0) {
-          return { data: [], cursor: null, hasMore: false };
-        }
-
-        // Fetch full step data
-        const pipeline = redis.pipeline();
-        for (const stepId of resultIds) {
-          pipeline.hgetall(keys.step(params.runId, stepId));
-        }
-        const results = await pipeline.exec();
-
-        const data = results
-          ?.filter(([err, val]) => !err && val && Object.keys(val as object).length > 0)
-          .map(([, val]) => deserializeFromRedis<Step>(val as Record<string, string>)!)
-          .filter((s): s is Step => s !== null) ?? [];
-
-        const nextCursor = hasMore && data.length > 0 ? data[data.length - 1]?.stepId : null;
-
-        return {
-          data: data.map((s) => filterStepData(s, params.resolveData)),
-          cursor: nextCursor ?? null,
-          hasMore,
-        };
-      },
-    },
-
-    // =========================================================================
-    // EVENTS STORAGE
-    // =========================================================================
-    events: {
-      async create(runId, data: AnyEventRequest, params): Promise<Event> {
-        const eventId = `evnt_${generateUlid()}`;
-        const now = new Date();
-        const score = ulidToScore(eventId);
-
-        const event: Event = {
-          ...data,
+        const event = await commitOrRetry(
           runId,
-          eventId,
-          createdAt: now,
-        };
+          {
+            guards: [{ t: 'status_in', k: runKey, v: [currentRun.status] }],
+            ops: [
+              { o: 'hset', k: runKey, fields: fieldsOf(changes) },
+              ...runStatusOps(currentRun, status),
+              // A run that ended releases its hook tokens and its waits.
+              {
+                o: 'drop_hooks',
+                idx: keys.hooksIdxRun(runId),
+                hookPrefix: keys.hookPrefix(),
+                tokenPrefix: keys.hookTokenPrefix(),
+              },
+              { o: 'drop_set', idx: keys.waitsIdxRun(runId), prefix: keys.waitPrefix(runId) },
+            ],
+            event: eventAppend(runId, body),
+          },
+          body
+        );
+        const run = { ...currentRun, ...changes } as WorkflowRun;
+        return finish(event!, { run: filterRun(run, entityRD) });
+      }
 
-        // Use CBOR for type-preserving serialization (Date, etc.)
-        const serialized = toCbor(event);
-
-        const pipeline = redis.pipeline();
-        // Store event in sorted set (member is the full event JSON)
-        pipeline.zadd(keys.eventsRun(runId), score, serialized);
-
-        // Index by correlation ID if present
-        if (data.correlationId) {
-          pipeline.zadd(keys.eventsIdxCorrelation(data.correlationId), score, serialized);
-        }
-
-        await pipeline.exec();
-
-        return filterEventData(event, params?.resolveData);
-      },
-
-      async list(params): Promise<PaginatedResponse<Event>> {
-
-        // Events default to ascending order (oldest first) for replay
-        const sortOrder = params.pagination?.sortOrder ?? 'asc';
-        const limit = params.pagination?.limit ?? 10000;
-        const cursor = params.pagination?.cursor;
-
-        const indexKey = keys.eventsRun(params.runId);
-
-        // Get cursor score if provided
-        let cursorScore: number | undefined;
-        if (cursor) {
-          // Need to find the score for this cursor (eventId)
-          // We stored the full CBOR/JSON, so we need to scan
-          const allEvents = await redis.zrange(indexKey, 0, -1, 'WITHSCORES');
-          for (let i = 0; i < allEvents.length; i += 2) {
-            const eventData = allEvents[i];
-            const score = allEvents[i + 1];
-            const event = fromCbor<Event>(eventData);
-            if (event?.eventId === cursor) {
-              cursorScore = Number(score);
-              break;
-            }
-          }
-        }
-
-        // Fetch events
-        let eventJsons: string[];
-        if (sortOrder === 'asc') {
-          if (cursorScore !== undefined) {
-            eventJsons = await redis.zrangebyscore(
-              indexKey,
-              `(${cursorScore}`,
-              '+inf',
-              'LIMIT',
-              0,
-              limit + 1
-            );
-          } else {
-            eventJsons = await redis.zrangebyscore(
-              indexKey,
-              '-inf',
-              '+inf',
-              'LIMIT',
-              0,
-              limit + 1
-            );
-          }
-        } else {
-          if (cursorScore !== undefined) {
-            eventJsons = await redis.zrevrangebyscore(
-              indexKey,
-              `(${cursorScore}`,
-              '-inf',
-              'LIMIT',
-              0,
-              limit + 1
-            );
-          } else {
-            eventJsons = await redis.zrevrangebyscore(
-              indexKey,
-              '+inf',
-              '-inf',
-              'LIMIT',
-              0,
-              limit + 1
+      case 'attr_set': {
+        const { changes, allowReservedAttributes } = data.eventData;
+        if (data.correlationId && data.eventData.writer.type === 'workflow') {
+          const ids = await redis.zrange(keys.eventsCorrelation(runId, data.correlationId), 0, -1);
+          const existing = await readEvents(runId, ids);
+          if (existing.some((event) => event.eventType === 'attr_set')) {
+            throw new EntityConflictError(
+              `attr_set for correlationId "${data.correlationId}" already exists in run "${runId}"`
             );
           }
         }
-
-        const hasMore = eventJsons.length > limit;
-        const resultJsons = eventJsons.slice(0, limit);
-
-        // Deserialize events using CBOR (with JSON fallback for legacy data)
-        const data: Event[] = [];
-        for (const encoded of resultJsons) {
-          const event = fromCbor<Event>(encoded);
-          if (event) {
-            data.push(event);
-          }
-        }
-
-        const nextCursor = hasMore && data.length > 0 ? data[data.length - 1]?.eventId : null;
-
-        return {
-          data: data.map((e) => filterEventData(e, params.resolveData)),
-          cursor: nextCursor ?? null,
-          hasMore,
-        };
-      },
-
-      async listByCorrelationId(params): Promise<PaginatedResponse<Event>> {
-        const sortOrder = params.pagination?.sortOrder ?? 'asc';
-        const limit = params.pagination?.limit ?? 100;
-
-        const indexKey = keys.eventsIdxCorrelation(params.correlationId);
-
-        let eventJsons: string[];
-        if (sortOrder === 'asc') {
-          eventJsons = await redis.zrange(indexKey, 0, limit);
-        } else {
-          eventJsons = await redis.zrevrange(indexKey, 0, limit);
-        }
-
-        const hasMore = eventJsons.length > limit;
-        const resultJsons = eventJsons.slice(0, limit);
-
-        // Deserialize events using CBOR (with JSON fallback for legacy data)
-        const data: Event[] = [];
-        for (const encoded of resultJsons) {
-          const event = fromCbor<Event>(encoded);
-          if (event) {
-            data.push(event);
-          }
-        }
-
-        const nextCursor = hasMore && data.length > 0 ? data[data.length - 1]?.eventId : null;
-
-        return {
-          data: data.map((e) => filterEventData(e, params.resolveData)),
-          cursor: nextCursor ?? null,
-          hasMore,
-        };
-      },
-    },
-
-    // =========================================================================
-    // HOOKS STORAGE
-    // =========================================================================
-    hooks: {
-      async create(runId, data: CreateHookRequest, params): Promise<Hook> {
-        // Check for token uniqueness using SETNX
-        const tokenKey = keys.hookToken(data.token);
-        const isUnique = await redis.setnx(tokenKey, data.hookId);
-
-        if (!isUnique) {
-          throw new WorkflowAPIError(
-            `Hook with token ${data.token} already exists`,
-            { status: 409 }
+        validateAttributeChanges(changes, {
+          existingKeys: Object.keys(currentRun.attributes ?? {}),
+          allowReservedAttributes: allowReservedAttributes === true,
+        });
+        const attributes = applyAttributeChanges(currentRun.attributes ?? {}, changes);
+        if (Object.keys(attributes).length > ATTRIBUTE_MAX_PER_RUN) {
+          throw new AttributeValidationError(
+            `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN}`
           );
         }
+        const previous = await redis.hget(runKey, 'attributes');
+        const event = await commitOrRetry(
+          runId,
+          {
+            // Compare-and-set on the stored attributes, so two writers cannot
+            // both apply their changes to the same starting set.
+            guards: [runAlive, { t: 'field_eq', k: runKey, f: 'attributes', v: previous }],
+            ops: [{ o: 'hset', k: runKey, fields: fieldsOf({ attributes, updatedAt: now }) }],
+            event: eventAppend(runId, body, data.correlationId),
+          },
+          body
+        );
+        const run = { ...currentRun, attributes, updatedAt: now } as WorkflowRun;
+        return finish(event!, { run: filterRun(run, entityRD) });
+      }
 
-        const now = new Date();
+      // =======================================================================
+      // Step lifecycle
+      // =======================================================================
+      case 'step_created': {
+        const stepId = data.correlationId;
+        const step: Step = {
+          runId,
+          stepId,
+          stepName: data.eventData.stepName,
+          status: 'pending',
+          input: data.eventData.input,
+          attempt: 0,
+          createdAt: now,
+          updatedAt: now,
+          specVersion,
+        };
+        if (await redis.exists(keys.step(runId, stepId))) {
+          throw new EntityConflictError(`Step "${stepId}" already exists`);
+        }
+        const event = await commitOrRetry(
+          runId,
+          {
+            guards: [runAlive, { t: 'absent', k: keys.step(runId, stepId) }],
+            ops: newStepOps(step),
+            event: eventAppend(runId, body, stepId),
+          },
+          body
+        );
+        return finish(event!, { step: filterStep(step, entityRD) });
+      }
+
+      case 'step_started': {
+        const stepId = data.correlationId;
+        const stepKey = keys.step(runId, stepId);
+        const existing = await readStep(runId, stepId);
+        if (lazyStepStart && existing) {
+          throw new EntityConflictError(`Step "${stepId}" already created`);
+        }
+        if (!lazyStepStart && !existing) {
+          throw new WorkflowWorldError(`Step "${stepId}" not found`, { status: 404 });
+        }
+        if (existing) {
+          if (isTerminalStepStatus(existing.status)) {
+            throw new EntityConflictError(
+              `Cannot modify step in terminal state "${existing.status}"`
+            );
+          }
+          // A start on an ended run is refused even when the step reads
+          // `running`: that is a redelivery of a start an earlier delivery
+          // already claimed, and its outcome would never be read.
+          if (runIsTerminal) {
+            throw new RunExpiredError(
+              `Cannot start step on run in terminal state "${currentRun.status}"`,
+              runId,
+              currentRun.status as 'completed' | 'failed' | 'cancelled'
+            );
+          }
+          if (existing.retryAfter && existing.retryAfter.getTime() > Date.now()) {
+            throw new TooEarlyError(
+              `Cannot start step "${stepId}": retryAfter timestamp has not been reached yet`,
+              { retryAfter: Math.ceil((existing.retryAfter.getTime() - Date.now()) / 1000) }
+            );
+          }
+        }
+
+        // The step's input belongs on step_created, not on step_started.
+        const { input: lazyInput, ...startEventData } = (data.eventData ?? {}) as {
+          input?: unknown;
+        } & Record<string, unknown>;
+        const startedBody = { ...body, eventData: data.eventData ? startEventData : undefined };
+
+        const guards: Guard[] = [runAlive];
+        const ops: Op[] = [];
+        const events: EventAppend[] = [];
+        if (lazyStepStart) {
+          // Lazy start: creating the step is the ownership claim. Only the
+          // caller whose commit creates it runs the step body. The synthetic
+          // step_created is appended in the same commit, ahead of the start,
+          // so the log can never hold one without the other.
+          const created: Step = {
+            runId,
+            stepId,
+            stepName: String(startEventData.stepName),
+            status: 'pending',
+            input: lazyInput,
+            attempt: 0,
+            createdAt: now,
+            updatedAt: now,
+            specVersion,
+          };
+          guards.push({ t: 'absent', k: stepKey });
+          ops.push(...newStepOps(created));
+          events.push(
+            eventAppend(
+              runId,
+              { ...body, eventType: 'step_created', eventData: { stepName: startEventData.stepName, input: lazyInput } },
+              stepId
+            )
+          );
+        } else {
+          guards.push(
+            { t: 'status_not_in', k: stepKey, v: TERMINAL_STEP },
+            { t: 'field_le', k: stepKey, f: 'retryAfter', v: nowIso }
+          );
+        }
+        ops.push(
+          { o: 'hset', k: stepKey, fields: fieldsOf({ status: 'running', updatedAt: now }) },
+          { o: 'hincrby', k: stepKey, f: 'attempt', by: 1 },
+          { o: 'hsetnx', k: stepKey, f: 'startedAt', v: nowIso },
+          { o: 'hdel', k: stepKey, fields: ['retryAfter'] }
+        );
+        events.push(eventAppend(runId, startedBody, stepId));
+        const result = await commit(redis, { guards, ops, events });
+        if (!result.ok) {
+          if (lazyStepStart && result.failedGuard === 2) {
+            throw new EntityConflictError(`Step "${stepId}" already created`);
+          }
+          throw new Retry();
+        }
+        const step = (await readStep(runId, stepId))!;
+        const event = { ...startedBody, runId, eventId: result.eventId! } as Event;
+        return finish(event, {
+          step: filterStep(step, entityRD),
+          ...(lazyStepStart ? { stepCreated: true as const } : {}),
+        });
+      }
+
+      case 'step_completed':
+      case 'step_failed':
+      case 'step_retrying': {
+        const stepId = data.correlationId;
+        const stepKey = keys.step(runId, stepId);
+        const existing = await readStep(runId, stepId);
+        if (!existing) {
+          throw new WorkflowWorldError(`Step "${stepId}" not found`, { status: 404 });
+        }
+        if (isTerminalStepStatus(existing.status)) {
+          throw new EntityConflictError(`Cannot modify step in terminal state "${existing.status}"`);
+        }
+        const changes: Record<string, unknown> = { updatedAt: now };
+        const removed: string[] = [];
+        const guards: Guard[] = [{ t: 'status_in', k: stepKey, v: [existing.status] }];
+        if (data.eventType === 'step_completed') {
+          Object.assign(changes, { status: 'completed', output: data.eventData.result, completedAt: now });
+        } else if (data.eventType === 'step_failed') {
+          Object.assign(changes, { status: 'failed', error: data.eventData.error, completedAt: now });
+        } else {
+          // A step in flight may still record its outcome on an ended run,
+          // but a retry schedules more work, which an ended run never runs.
+          if (runIsTerminal && existing.status !== 'running') {
+            throw new RunExpiredError(
+              `Cannot modify non-running step on run in terminal state "${currentRun.status}"`,
+              runId,
+              currentRun.status as 'completed' | 'failed' | 'cancelled'
+            );
+          }
+          Object.assign(changes, {
+            status: 'pending',
+            error: data.eventData.error,
+            retryAfter: data.eventData.retryAfter,
+          });
+          if (!data.eventData.retryAfter) removed.push('retryAfter');
+        }
+        const event = await commitOrRetry(
+          runId,
+          {
+            guards,
+            ops: [
+              { o: 'hset', k: stepKey, fields: fieldsOf(changes) },
+              { o: 'hdel', k: stepKey, fields: removed },
+            ],
+            event: eventAppend(runId, body, stepId),
+          },
+          body
+        );
+        const step = { ...existing, ...changes } as Step;
+        return finish(event!, { step: filterStep(step, entityRD) });
+      }
+
+      // =======================================================================
+      // Hooks
+      // =======================================================================
+      case 'hook_created': {
+        const hookId = data.correlationId;
+        const { token } = data.eventData;
+        const owner = await redis.get(keys.hookToken(token));
+        if (owner) {
+          const ownerHook = await readHook(owner);
+          if (owner === hookId && ownerHook?.runId === runId) {
+            throw new EntityConflictError(`Hook "${hookId}" already created`);
+          }
+          const conflictBody = {
+            ...body,
+            eventType: 'hook_conflict',
+            eventData: { token, conflictingRunId: ownerHook?.runId },
+          };
+          const event = await commitOrRetry(
+            runId,
+            {
+              guards: [],
+              ops: [],
+              event: eventAppend(runId, conflictBody, hookId),
+            },
+            conflictBody
+          );
+          return finish(event!);
+        }
         const hook: Hook = {
           runId,
-          hookId: data.hookId,
-          token: data.token,
-          metadata: data.metadata,
+          hookId,
+          token,
+          metadata: data.eventData.metadata,
           ownerId: 'redis-owner',
           projectId: 'redis-project',
           environment: 'development',
           createdAt: now,
-          specVersion: (data as { specVersion?: number }).specVersion,
+          specVersion,
+          isWebhook: data.eventData.isWebhook,
+          isSystem: data.eventData.isSystem,
         };
+        const event = await commitOrRetry(
+          runId,
+          {
+            guards: [
+              runAlive,
+              { t: 'absent', k: keys.hookToken(token) },
+              { t: 'absent', k: keys.hook(hookId) },
+            ],
+            ops: [
+              { o: 'set', k: keys.hookToken(token), v: hookId },
+              { o: 'hset', k: keys.hook(hookId), fields: fieldsOf(hook) },
+              { o: 'sadd', k: keys.hooksIdxRun(runId), m: hookId },
+            ],
+            event: eventAppend(runId, body, hookId),
+          },
+          body
+        );
+        return finish(event!, { hook: filterHook(hook, entityRD) });
+      }
 
-        const serialized = serializeForRedis(hook as unknown as Record<string, unknown>);
+      case 'hook_received': {
+        // The existence check is a guard of the commit itself, so a delivery
+        // cannot land after the disposal it races.
+        const result = await commit(redis, {
+          guards: [{ t: 'exists', k: keys.hook(data.correlationId) }],
+          ops: [],
+          event: eventAppend(runId, body, data.correlationId),
+        });
+        if (!result.ok) throw new HookNotFoundError(data.correlationId);
+        return finish({ ...body, runId, eventId: result.eventId! } as Event);
+      }
 
-        const pipeline = redis.pipeline();
-        pipeline.hset(keys.hook(data.hookId), serialized);
-        pipeline.sadd(keys.hooksIdxRun(runId), data.hookId);
-        await pipeline.exec();
+      case 'hook_disposed': {
+        const hook = await readHook(data.correlationId);
+        if (!hook || hook.runId !== runId) throw new HookNotFoundError(data.correlationId);
+        const event = await commitOrRetry(
+          runId,
+          {
+            guards: [{ t: 'exists', k: keys.hook(hook.hookId) }],
+            ops: [
+              { o: 'del', k: keys.hook(hook.hookId) },
+              { o: 'del', k: keys.hookToken(hook.token) },
+              { o: 'srem', k: keys.hooksIdxRun(runId), m: hook.hookId },
+            ],
+            event: eventAppend(runId, body, data.correlationId),
+          },
+          body
+        );
+        return finish(event!);
+      }
 
-        return filterHookData(hook, params?.resolveData);
-      },
-
-      async get(hookId, params): Promise<Hook> {
-        const data = await redis.hgetall(keys.hook(hookId));
-        const hook = deserializeFromRedis<Hook>(data);
-
-        if (!hook) {
-          throw new WorkflowAPIError(`Hook not found: ${hookId}`, { status: 404 });
+      // =======================================================================
+      // Waits
+      // =======================================================================
+      case 'wait_created': {
+        const waitId = data.correlationId;
+        const wait: Wait = {
+          waitId,
+          runId,
+          status: 'waiting',
+          resumeAt: data.eventData.resumeAt,
+          createdAt: now,
+          updatedAt: now,
+          specVersion,
+        };
+        if (await redis.exists(keys.wait(runId, waitId))) {
+          throw new EntityConflictError(`Wait "${waitId}" already exists`);
         }
+        const event = await commitOrRetry(
+          runId,
+          {
+            guards: [runAlive, { t: 'absent', k: keys.wait(runId, waitId) }],
+            ops: [
+              { o: 'hset', k: keys.wait(runId, waitId), fields: fieldsOf(wait) },
+              { o: 'sadd', k: keys.waitsIdxRun(runId), m: waitId },
+            ],
+            event: eventAppend(runId, body, waitId),
+          },
+          body
+        );
+        return finish(event!, { wait });
+      }
 
-        return filterHookData(hook, params?.resolveData);
+      case 'wait_completed': {
+        const waitId = data.correlationId;
+        const existing = await readWait(runId, waitId);
+        if (!existing) {
+          throw new WorkflowWorldError(`Wait "${waitId}" not found`, { status: 404 });
+        }
+        if (existing.status === 'completed') {
+          throw new EntityConflictError(`Wait "${waitId}" already completed`);
+        }
+        const changes = { status: 'completed', completedAt: now, updatedAt: now };
+        const event = await commitOrRetry(
+          runId,
+          {
+            guards: [{ t: 'status_in', k: keys.wait(runId, waitId), v: ['waiting'] }],
+            ops: [{ o: 'hset', k: keys.wait(runId, waitId), fields: fieldsOf(changes) }],
+            event: eventAppend(runId, body, waitId),
+          },
+          body
+        );
+        return finish(event!, { wait: { ...existing, ...changes } as Wait });
+      }
+
+      default:
+        throw new WorkflowWorldError(
+          `Unsupported event type: ${(data as { eventType: string }).eventType}`,
+          { status: 400 }
+        );
+    }
+  }
+
+  async function createEvent(
+    runId: string | null,
+    data: AnyEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> {
+    if (data.eventType === 'run_created') {
+      return createRunEvent(runId, data, params?.resolveData ?? 'all');
+    }
+    if (!runId) {
+      throw new WorkflowWorldError('runId is required for non-run_created events', {
+        status: 400,
+      });
+    }
+    if (
+      (data.eventType.startsWith('step_') ||
+        data.eventType.startsWith('hook_') ||
+        data.eventType.startsWith('wait_')) &&
+      !data.correlationId
+    ) {
+      throw new WorkflowWorldError(`${data.eventType} requires a correlationId`, { status: 400 });
+    }
+    for (let attempt = 0; attempt < MAX_COMMIT_ATTEMPTS; attempt++) {
+      try {
+        return await attemptCreate(runId, data, params);
+      } catch (error) {
+        if (!(error instanceof Retry)) throw error;
+      }
+    }
+    throw new WorkflowWorldError(
+      `Could not commit ${data.eventType} for run "${runId}" after ${MAX_COMMIT_ATTEMPTS} attempts`,
+      { status: 503 }
+    );
+  }
+
+  // ===========================================================================
+  // Reads
+  // ===========================================================================
+
+  async function listRuns(params?: ListWorkflowRunsParams) {
+    const sortOrder = params?.pagination?.sortOrder ?? 'desc';
+    const limit = params?.pagination?.limit ?? 100;
+    const cursor = params?.pagination?.cursor;
+    const statuses =
+      params?.status === undefined
+        ? undefined
+        : Array.isArray(params.status)
+          ? params.status
+          : [params.status];
+    if (statuses && statuses.length === 0) {
+      return { data: [], cursor: null, hasMore: false };
+    }
+
+    // One index to page through; any other filter applies to the page.
+    const indexKey = params?.workflowName
+      ? keys.runsIdxWorkflow(params.workflowName)
+      : statuses?.length === 1
+        ? keys.runsIdxStatus(statuses[0])
+        : keys.runsIdxAll();
+
+    const data: WorkflowRun[] = [];
+    let after = cursor ? await redis.zscore(indexKey, cursor) : null;
+    let lastId = cursor;
+    let hasMore = false;
+    // Page through the index until the filtered page is full.
+    while (data.length < limit) {
+      const batch = 100;
+      const ids =
+        sortOrder === 'desc'
+          ? await redis.zrevrangebyscore(indexKey, after !== null ? `(${after}` : '+inf', '-inf', 'LIMIT', 0, batch)
+          : await redis.zrangebyscore(indexKey, after !== null ? `(${after}` : '-inf', '+inf', 'LIMIT', 0, batch);
+      if (ids.length === 0) break;
+      const pipeline = redis.pipeline();
+      for (const id of ids) pipeline.hgetall(keys.run(id));
+      const results = (await pipeline.exec()) ?? [];
+      for (let i = 0; i < ids.length; i++) {
+        const run = deserializeFromRedis<WorkflowRun>(results[i]?.[1] as Record<string, string>);
+        lastId = ids[i];
+        if (!run) continue;
+        if (statuses && !statuses.includes(run.status)) continue;
+        if (data.length === limit) {
+          hasMore = true;
+          break;
+        }
+        run.attributes = run.attributes ?? {};
+        data.push(run);
+      }
+      if (hasMore || ids.length < batch) break;
+      after = await redis.zscore(indexKey, ids[ids.length - 1]);
+    }
+    return {
+      data: data.map((run) => filterRun(run, params?.resolveData)),
+      cursor: hasMore ? (data[data.length - 1]?.runId ?? lastId ?? null) : null,
+      hasMore,
+    };
+  }
+
+  async function listEventPage(
+    runId: string,
+    indexKey: string,
+    params: { pagination?: { sortOrder?: 'asc' | 'desc'; limit?: number; cursor?: string }; resolveData?: EventsResolveData },
+    defaultLimit: number
+  ): Promise<PaginatedResponse<Event>> {
+    const sortOrder = params.pagination?.sortOrder ?? 'asc';
+    const limit = params.pagination?.limit ?? defaultLimit;
+    const cursorSlot = params.pagination?.cursor ? eventIdToSlot(params.pagination.cursor) : null;
+    const ids =
+      sortOrder === 'asc'
+        ? await redis.zrangebyscore(indexKey, cursorSlot !== null ? `(${cursorSlot}` : '-inf', '+inf', 'LIMIT', 0, limit + 1)
+        : await redis.zrevrangebyscore(indexKey, cursorSlot !== null ? `(${cursorSlot}` : '+inf', '-inf', 'LIMIT', 0, limit + 1);
+    const hasMore = ids.length > limit;
+    const events = await readEvents(runId, ids.slice(0, limit));
+    return {
+      data: events.map((event) => filterEvent(event, params.resolveData)),
+      cursor: hasMore ? (events[events.length - 1]?.eventId ?? null) : null,
+      hasMore,
+    };
+  }
+
+  /** Events of a run written before positional IDs, oldest first. */
+  async function listLegacyEvents(
+    runId: string,
+    resolveData: EventsResolveData | undefined,
+    correlationId?: string
+  ): Promise<PaginatedResponse<Event>> {
+    const encoded = await redis.zrange(keys.legacyEventsRun(runId), 0, -1);
+    const events = encoded
+      .map((value) => fromCbor<Event>(value))
+      .filter((event): event is Event => !!event)
+      .filter((event) => !correlationId || event.correlationId === correlationId);
+    return {
+      data: events.map((event) => filterEvent(event, resolveData)),
+      cursor: null,
+      hasMore: false,
+    };
+  }
+
+  const storage: Storage = {
+    runs: {
+      async get(id: string, params?: { resolveData?: ResolveData }) {
+        const run = await readRun(id);
+        if (!run) throw new WorkflowRunNotFoundError(id);
+        return filterRun(run, params?.resolveData) as any;
+      },
+      list: listRuns as Storage['runs']['list'],
+    } as Storage['runs'],
+
+    steps: {
+      async get(runId: string, stepId: string, params?: { resolveData?: ResolveData }) {
+        const step = await readStep(runId, stepId);
+        if (!step) throw new WorkflowWorldError(`Step "${stepId}" not found`, { status: 404 });
+        return filterStep(step, params?.resolveData) as any;
       },
 
-      async getByToken(token, params): Promise<Hook> {
-        const hookId = await redis.get(keys.hookToken(token));
+      async list(params) {
+        const sortOrder = params.pagination?.sortOrder ?? 'desc';
+        const limit = params.pagination?.limit ?? 100;
+        const cursor = params.pagination?.cursor;
+        const indexKey = keys.stepsIdxRun(params.runId);
+        const after = cursor ? await redis.zscore(indexKey, cursor) : null;
+        // Steps created in the same millisecond share a score, so the cursor
+        // step itself is skipped by member rather than by score.
+        const ids =
+          sortOrder === 'desc'
+            ? await redis.zrevrangebyscore(indexKey, after ?? '+inf', '-inf')
+            : await redis.zrangebyscore(indexKey, after ?? '-inf', '+inf');
+        const start = cursor ? ids.indexOf(cursor) + 1 : 0;
+        const pageIds = ids.slice(start, start + limit + 1);
+        const hasMore = pageIds.length > limit;
+        const pipeline = redis.pipeline();
+        for (const stepId of pageIds.slice(0, limit)) {
+          pipeline.hgetall(keys.step(params.runId, stepId));
+        }
+        const results = (await pipeline.exec()) ?? [];
+        const data = results
+          .map(([, value]) => deserializeFromRedis<Step>(value as Record<string, string>))
+          .filter((step): step is Step => step !== null);
+        return {
+          data: data.map((step) => filterStep(step, params.resolveData)),
+          cursor: hasMore ? (data[data.length - 1]?.stepId ?? null) : null,
+          hasMore,
+        } as any;
+      },
+    } as Storage['steps'],
 
-        if (!hookId) {
-          throw new WorkflowAPIError(`Hook not found for token: ${token}`, {
+    events: {
+      create: createEvent as Storage['events']['create'],
+
+      async get(runId, eventId, params) {
+        const [event] = await readEvents(runId, [eventId]);
+        if (!event) {
+          throw new WorkflowWorldError(`Event "${eventId}" not found in run "${runId}"`, {
             status: 404,
           });
         }
-
-        return this.get(hookId, params);
+        return filterEvent(event, params?.resolveData);
       },
 
-      async list(params): Promise<PaginatedResponse<Hook>> {
+      async list(params) {
+        if ((await redis.exists(keys.eventsSeq(params.runId))) === 0) {
+          return listLegacyEvents(params.runId, params.resolveData);
+        }
+        return listEventPage(params.runId, keys.eventsIdx(params.runId), params, 10000);
+      },
+
+      async listByCorrelationId(params) {
+        if ((await redis.exists(keys.eventsSeq(params.runId))) === 0) {
+          return listLegacyEvents(params.runId, params.resolveData, params.correlationId);
+        }
+        return listEventPage(
+          params.runId,
+          keys.eventsCorrelation(params.runId, params.correlationId),
+          params,
+          100
+        );
+      },
+    },
+
+    hooks: {
+      async get(hookId, params) {
+        const hook = await readHook(hookId);
+        if (!hook) throw new HookNotFoundError(hookId);
+        return filterHook(hook, params?.resolveData);
+      },
+
+      async getByToken(token, params) {
+        const hookId = await redis.get(keys.hookToken(token));
+        const hook = hookId ? await readHook(hookId) : null;
+        if (!hook) throw new HookNotFoundError(token);
+        return filterHook(hook, params?.resolveData);
+      },
+
+      async list(params) {
         const limit = params.pagination?.limit ?? 100;
+        const cursor = params.pagination?.cursor;
 
         let hookIds: string[];
         if (params.runId) {
@@ -783,497 +1238,32 @@ export async function createStorage(options: {
             cursorIter = nextCursor;
             keysList.push(...foundKeys);
           } while (cursorIter !== '0');
-
           hookIds = keysList.map((k) => k.split(':').pop()!);
         }
 
-        if (hookIds.length === 0) {
-          return { data: [], cursor: null, hasMore: false };
-        }
+        hookIds.sort();
+        if (params.pagination?.sortOrder === 'desc') hookIds.reverse();
+        const start = cursor ? hookIds.indexOf(cursor) + 1 : 0;
+        const pageIds = hookIds.slice(start, start + limit + 1);
+        const hasMore = pageIds.length > limit;
 
-        const hasMore = hookIds.length > limit;
-        const resultIds = hookIds.slice(0, limit);
-
-        // Fetch full hook data
         const pipeline = redis.pipeline();
-        for (const hookId of resultIds) {
+        for (const hookId of pageIds.slice(0, limit)) {
           pipeline.hgetall(keys.hook(hookId));
         }
-        const results = await pipeline.exec();
-
+        const results = (await pipeline.exec()) ?? [];
         const data = results
-          ?.filter(([err, val]) => !err && val && Object.keys(val as object).length > 0)
-          .map(([, val]) => deserializeFromRedis<Hook>(val as Record<string, string>)!)
-          .filter((h): h is Hook => h !== null) ?? [];
-
-        const nextCursor = hasMore && data.length > 0 ? data[data.length - 1]?.hookId : null;
+          .map(([, value]) => deserializeFromRedis<Hook>(value as Record<string, string>))
+          .filter((hook): hook is Hook => hook !== null);
 
         return {
-          data: data.map((h) => filterHookData(h, params.resolveData)),
-          cursor: nextCursor ?? null,
+          data: data.map((hook) => filterHook(hook, params.resolveData)),
+          cursor: hasMore ? (data[data.length - 1]?.hookId ?? null) : null,
           hasMore,
         };
       },
-
-      async dispose(hookId, params): Promise<Hook> {
-        const data = await redis.hgetall(keys.hook(hookId));
-        const hook = deserializeFromRedis<Hook>(data);
-
-        if (!hook) {
-          throw new WorkflowAPIError(`Hook not found: ${hookId}`, { status: 404 });
-        }
-
-        const pipeline = redis.pipeline();
-        pipeline.del(keys.hook(hookId));
-        pipeline.del(keys.hookToken(hook.token));
-        pipeline.srem(keys.hooksIdxRun(hook.runId), hookId);
-        await pipeline.exec();
-
-        return filterHookData(hook, params?.resolveData);
-      },
     },
   };
 
-  const appendEvent = legacyStorage.events.create.bind(
-    legacyStorage.events
-  ) as (
-    runId: string,
-    data: AnyEventRequest,
-    params?: CreateEventParams
-  ) => Promise<Event>;
-
-  async function handleLegacyEvent(
-    runId: string,
-    data: AnyEventRequest,
-    _currentRun: WorkflowRun,
-    params?: CreateEventParams
-  ): Promise<EventResult> {
-    const resolveData = params?.resolveData ?? 'all';
-
-    if (data.eventType === 'run_cancelled') {
-      const run = await legacyStorage.runs.update(runId, {
-        status: 'cancelled',
-        output: undefined,
-        error: undefined,
-      });
-      return { event: undefined, run: filterRunData(run, resolveData) };
-    }
-
-    if (data.eventType === 'wait_completed' || data.eventType === 'hook_received') {
-      const event = await appendEvent(
-        runId,
-        { ...data, specVersion: SPEC_VERSION_CURRENT } as AnyEventRequest,
-        params
-      );
-      return { event: filterEventData(event, resolveData) };
-    }
-
-    throw new WorkflowAPIError(
-      `Event '${data.eventType}' is not supported for legacy runs`,
-      { status: 409 }
-    );
-  }
-
-  const storage = {
-    runs: {
-      async get(id: string, params?: any) {
-        return legacyStorage.runs.get(id, params);
-      },
-      async list(params?: any) {
-        return legacyStorage.runs.list(params);
-      },
-    },
-
-    steps: {
-      async get(runId: string | undefined, stepId: string, params?: any) {
-        return legacyStorage.steps.get(runId, stepId, params);
-      },
-      async list(params: any) {
-        return legacyStorage.steps.list(params);
-      },
-    },
-
-    events: {
-      async create(runId: string | null, data: AnyEventRequest, params?: CreateEventParams): Promise<EventResult> {
-        const resolveData = params?.resolveData ?? 'all';
-        const specVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
-
-        if (data.eventType === 'run_created') {
-          const run = await legacyStorage.runs.create({
-            runId: runId ?? undefined,
-            deploymentId: data.eventData.deploymentId,
-            workflowName: data.eventData.workflowName,
-            input: data.eventData.input,
-            executionContext: data.eventData.executionContext,
-            specVersion,
-          });
-          const event = await appendEvent(
-            run.runId,
-            { ...data, specVersion } as AnyEventRequest,
-            params
-          );
-
-          return {
-            event: filterEventData(event, resolveData),
-            run: filterRunData(run, resolveData),
-          };
-        }
-
-        if (!runId) {
-          throw new WorkflowAPIError('runId is required for this event type', {
-            status: 400,
-          });
-        }
-
-        const currentRun = await legacyStorage.runs.get(runId, {
-          resolveData: 'all',
-        });
-        if (requiresNewerWorld(currentRun.specVersion)) {
-          throw new RunNotSupportedError(
-            currentRun.specVersion!,
-            SPEC_VERSION_CURRENT
-          );
-        }
-        if (isLegacySpecVersion(currentRun.specVersion)) {
-          return handleLegacyEvent(runId, data, currentRun, params);
-        }
-
-        if (isTerminalRunStatus(currentRun.status)) {
-          const runTerminalEvents = new Set([
-            'run_started',
-            'run_completed',
-            'run_failed',
-            'run_cancelled',
-          ]);
-
-          if (data.eventType === 'run_cancelled' && currentRun.status === 'cancelled') {
-            const idempotentEvent = await appendEvent(
-              runId,
-              { ...data, specVersion } as AnyEventRequest,
-              params
-            );
-            return {
-              event: filterEventData(idempotentEvent, resolveData),
-              run: filterRunData(currentRun, resolveData),
-            };
-          }
-
-          if (runTerminalEvents.has(data.eventType)) {
-            throw new WorkflowAPIError(
-              `Cannot transition run from terminal state '${currentRun.status}'`,
-              { status: 409 }
-            );
-          }
-
-          if (data.eventType === 'step_created' || data.eventType === 'hook_created') {
-            throw new WorkflowAPIError(
-              `Cannot create entities on terminal run '${currentRun.status}'`,
-              { status: 409 }
-            );
-          }
-        }
-
-        let validatedStep: Step | undefined;
-        const stepEvents = new Set([
-          'step_started',
-          'step_completed',
-          'step_failed',
-          'step_retrying',
-        ]);
-
-        if (stepEvents.has(data.eventType)) {
-          if (!data.correlationId) {
-            throw new WorkflowAPIError('Step events require correlationId', {
-              status: 400,
-            });
-          }
-
-          validatedStep = await legacyStorage.steps.get(runId, data.correlationId, {
-            resolveData: 'all',
-          });
-
-          if (isTerminalStepStatus(validatedStep.status)) {
-            throw new WorkflowAPIError(
-              `Cannot modify step in terminal state '${validatedStep.status}'`,
-              { status: 409 }
-            );
-          }
-
-          if (isTerminalRunStatus(currentRun.status) && validatedStep.status !== 'running') {
-            throw new WorkflowAPIError(
-              `Cannot modify non-running step on terminal run '${currentRun.status}'`,
-              { status: 410 }
-            );
-          }
-        }
-
-        if (
-          (data.eventType === 'hook_received' || data.eventType === 'hook_disposed') &&
-          data.correlationId
-        ) {
-          await legacyStorage.hooks.get(data.correlationId, { resolveData: 'all' });
-        }
-
-        let run: WorkflowRun | undefined;
-        let step: Step | undefined;
-        let hook: Hook | undefined;
-
-        switch (data.eventType) {
-          case 'run_started':
-            run = await legacyStorage.runs.update(runId, { status: 'running' });
-            run.specVersion = currentRun.specVersion;
-            break;
-          case 'run_completed':
-            run = await legacyStorage.runs.update(runId, {
-              status: 'completed',
-              output: data.eventData.output,
-              error: undefined,
-            });
-            run.specVersion = currentRun.specVersion;
-            break;
-          case 'run_failed': {
-            const message =
-              typeof data.eventData.error === 'string'
-                ? data.eventData.error
-                : (data.eventData.error?.message ?? 'Unknown error');
-            run = await legacyStorage.runs.update(runId, {
-              status: 'failed',
-              output: undefined,
-              error: {
-                message,
-                stack: data.eventData.error?.stack,
-                code: data.eventData.errorCode,
-              },
-            });
-            run.specVersion = currentRun.specVersion;
-            break;
-          }
-          case 'run_cancelled':
-            run = await legacyStorage.runs.update(runId, {
-              status: 'cancelled',
-              output: undefined,
-              error: undefined,
-            });
-            run.specVersion = currentRun.specVersion;
-            break;
-          case 'step_created': {
-            const stepId = data.correlationId;
-            if (!stepId) {
-              throw new WorkflowAPIError(
-                'correlationId is required for step_created',
-                { status: 400 }
-              );
-            }
-            try {
-              await legacyStorage.steps.get(runId, stepId, { resolveData: 'none' });
-              throw new WorkflowAPIError(`Step '${stepId}' already exists`, {
-                status: 409,
-              });
-            } catch (error) {
-              if (
-                error instanceof WorkflowAPIError &&
-                (error as { status?: number }).status === 404
-              ) {
-                // Step does not exist yet; continue with creation.
-              } else if (error instanceof WorkflowAPIError) {
-                throw error;
-              } else {
-                throw error;
-              }
-            }
-            step = await legacyStorage.steps.create(runId, {
-              stepId,
-              stepName: data.eventData.stepName,
-              input: data.eventData.input,
-              specVersion,
-            });
-            break;
-          }
-          case 'step_started': {
-            const stepId = data.correlationId;
-            if (!stepId || !validatedStep) {
-              throw new WorkflowAPIError(
-                'correlationId is required for step_started',
-                { status: 400 }
-              );
-            }
-            if (validatedStep.retryAfter && validatedStep.retryAfter.getTime() > Date.now()) {
-              const err = new WorkflowAPIError(
-                `Cannot start step '${stepId}' before retryAfter`,
-                { status: 425 }
-              );
-              (err as WorkflowAPIError & { meta?: Record<string, string> }).meta = {
-                stepId,
-                retryAfter: validatedStep.retryAfter.toISOString(),
-              };
-              throw err;
-            }
-            step = await legacyStorage.steps.update(runId, stepId, {
-              status: 'running',
-              attempt: validatedStep.attempt + 1,
-              retryAfter: undefined,
-            });
-            break;
-          }
-          case 'step_completed': {
-            const stepId = data.correlationId;
-            if (!stepId) {
-              throw new WorkflowAPIError(
-                'correlationId is required for step_completed',
-                { status: 400 }
-              );
-            }
-            step = await legacyStorage.steps.update(runId, stepId, {
-              status: 'completed',
-              output: data.eventData.result,
-              error: undefined,
-            });
-            break;
-          }
-          case 'step_failed': {
-            const stepId = data.correlationId;
-            if (!stepId) {
-              throw new WorkflowAPIError(
-                'correlationId is required for step_failed',
-                { status: 400 }
-              );
-            }
-            const message =
-              typeof data.eventData.error === 'string'
-                ? data.eventData.error
-                : (data.eventData.error?.message ?? 'Unknown error');
-            step = await legacyStorage.steps.update(runId, stepId, {
-              status: 'failed',
-              output: undefined,
-              error: {
-                message,
-                stack: data.eventData.stack,
-              },
-            });
-            break;
-          }
-          case 'step_retrying': {
-            const stepId = data.correlationId;
-            if (!stepId) {
-              throw new WorkflowAPIError(
-                'correlationId is required for step_retrying',
-                { status: 400 }
-              );
-            }
-            const message =
-              typeof data.eventData.error === 'string'
-                ? data.eventData.error
-                : (data.eventData.error?.message ?? 'Unknown error');
-            step = await legacyStorage.steps.update(runId, stepId, {
-              status: 'pending',
-              error: {
-                message,
-                stack: data.eventData.stack,
-              },
-              retryAfter: data.eventData.retryAfter,
-            });
-            break;
-          }
-          case 'hook_created': {
-            const hookId = data.correlationId;
-            if (!hookId) {
-              throw new WorkflowAPIError(
-                'correlationId is required for hook_created',
-                { status: 400 }
-              );
-            }
-            try {
-              hook = await legacyStorage.hooks.create(
-                runId,
-                {
-                  hookId,
-                  token: data.eventData.token,
-                  metadata: data.eventData.metadata,
-                  specVersion,
-                },
-                params
-              );
-            } catch (error) {
-              if (
-                error instanceof WorkflowAPIError &&
-                (error as { status?: number }).status === 409
-              ) {
-                const conflictEvent = await appendEvent(
-                  runId,
-                  {
-                    eventType: 'hook_conflict',
-                    correlationId: hookId,
-                    eventData: { token: data.eventData.token },
-                    specVersion,
-                  } as unknown as AnyEventRequest,
-                  params
-                );
-                return { event: filterEventData(conflictEvent, resolveData) };
-              }
-              throw error;
-            }
-            break;
-          }
-          case 'hook_disposed': {
-            const hookId = data.correlationId;
-            if (!hookId) {
-              throw new WorkflowAPIError(
-                'correlationId is required for hook_disposed',
-                { status: 400 }
-              );
-            }
-            hook = await legacyStorage.hooks.dispose(hookId, params);
-            break;
-          }
-          case 'hook_received':
-          case 'wait_created':
-          case 'wait_completed':
-            break;
-          default: {
-            const exhaustiveCheck: never = data as never;
-            throw new WorkflowAPIError(
-              `Unsupported event type: ${(exhaustiveCheck as { eventType: string }).eventType}`,
-              { status: 400 }
-            );
-          }
-        }
-
-        const event = await appendEvent(
-          runId,
-          { ...data, specVersion } as AnyEventRequest,
-          params
-        );
-        return {
-          event: filterEventData(event, resolveData),
-          run: run ? filterRunData(run, resolveData) : undefined,
-          step: step ? filterStepData(step, resolveData) : undefined,
-          hook: hook ? filterHookData(hook, resolveData) : undefined,
-        };
-      },
-
-      async list(params: any) {
-        return legacyStorage.events.list(params);
-      },
-
-      async listByCorrelationId(params: any) {
-        return legacyStorage.events.listByCorrelationId(params);
-      },
-    },
-
-    hooks: {
-      async get(hookId: string, params?: any) {
-        return legacyStorage.hooks.get(hookId, params);
-      },
-
-      async getByToken(token: string, params?: any) {
-        return legacyStorage.hooks.getByToken(token, params);
-      },
-
-      async list(params: any) {
-        return legacyStorage.hooks.list(params);
-      },
-    },
-  };
-
-  return { storage: storage as unknown as Storage };
+  return { storage };
 }

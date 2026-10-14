@@ -8,7 +8,12 @@
  */
 
 import { EventEmitter } from 'node:events';
-import type { Streamer } from '@workflow/world';
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  StreamInfoResponse,
+  Streamer,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 
 const generateUlid = monotonicFactory();
@@ -40,6 +45,13 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
   // In-memory storage for stream chunks
   // TODO: Replace with your database/storage
   const streams = new Map<string, StreamChunk[]>();
+
+  /** Data chunks up to the first EOF marker, in order. */
+  function dataChunks(name: string): { chunks: StreamChunk[]; done: boolean } {
+    const all = streams.get(name) ?? [];
+    const eof = all.findIndex((chunk) => chunk.eof);
+    return eof === -1 ? { chunks: all, done: false } : { chunks: all.slice(0, eof), done: true };
+  }
   const streamNamesByRun = new Map<string, Set<string>>();
 
   // Event emitter for real-time notifications
@@ -61,7 +73,7 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
     streamNames.add(streamName);
   }
 
-  return {
+  const api: Streamer['streams'] = {
     /**
      * Writes a chunk of data to a named stream.
      *
@@ -70,9 +82,9 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
      * - PostgreSQL: INSERT INTO stream_chunks + NOTIFY
      * - MongoDB: Insert document + Change Streams
      */
-    async writeToStream(
+    async write(
+      runId: string,
       name: string,
-      runId: string | Promise<string>,
       chunk: string | Uint8Array
     ): Promise<void> {
       // Await runId if it's a promise (ensures proper ordering)
@@ -112,10 +124,7 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
      *
      * TODO: Store EOF marker and notify subscribers.
      */
-    async closeStream(
-      name: string,
-      runId: string | Promise<string>
-    ): Promise<void> {
+    async close(runId: string, name: string): Promise<void> {
       const resolvedRunId = await runId;
       registerStream(resolvedRunId, name);
 
@@ -138,7 +147,40 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
       emitter.emit(`close:${name}`);
     },
 
-    async listStreamsByRunId(runId: string): Promise<string[]> {
+    async writeMulti(
+      runId: string,
+      name: string,
+      chunks: (string | Uint8Array)[]
+    ): Promise<void> {
+      for (const chunk of chunks) {
+        await api.write(runId, name, chunk);
+      }
+    },
+
+    async getChunks(
+      _runId: string,
+      name: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse> {
+      const limit = options?.limit ?? 100;
+      const start = options?.cursor ? Number.parseInt(options.cursor, 10) || 0 : 0;
+      const { chunks, done } = dataChunks(name);
+      const page = chunks.slice(start, start + limit);
+      const hasMore = start + page.length < chunks.length;
+      return {
+        data: page.map((chunk, i) => ({ index: start + i, data: Uint8Array.from(chunk.data) })),
+        cursor: hasMore ? String(start + page.length) : null,
+        hasMore,
+        done,
+      };
+    },
+
+    async getInfo(_runId: string, name: string): Promise<StreamInfoResponse> {
+      const { chunks, done } = dataChunks(name);
+      return { tailIndex: chunks.length - 1, done };
+    },
+
+    async list(runId: string): Promise<string[]> {
       return Array.from(streamNamesByRun.get(runId) ?? []);
     },
 
@@ -153,10 +195,16 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
      *
      * TODO: Replace with your streaming backend's read mechanism.
      */
-    async readFromStream(
+    async get(
+      _runId: string,
       name: string,
-      startIndex = 0
+      requestedStartIndex = 0
     ): Promise<ReadableStream<Uint8Array>> {
+      // A negative start counts back from the current end of the stream.
+      const startIndex =
+        requestedStartIndex < 0
+          ? Math.max(0, dataChunks(name).chunks.length + requestedStartIndex)
+          : requestedStartIndex;
       return new ReadableStream<Uint8Array>({
         start(controller) {
           // Track chunks we've already delivered to prevent duplicates
@@ -274,4 +322,6 @@ export function createStreamer(_config: StreamerConfig = {}): Streamer {
       });
     },
   };
+
+  return { streams: api };
 }

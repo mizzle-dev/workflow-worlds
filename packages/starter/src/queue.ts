@@ -7,16 +7,20 @@
  * TODO markers indicate where to swap in your real backend.
  */
 
-import { JsonTransport } from '@vercel/queue';
-import type {
-  Queue,
-  MessageId,
-  ValidQueueName,
-  QueuePrefix,
+import {
+  WORKFLOW_FLOW_ROUTE,
+  type MessageId,
+  type Queue,
+  type QueueOptions,
+  type QueuePayload,
+  type QueuePrefix,
+  type ValidQueueName,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
-import { debug } from './utils.js';
+import { debug, parseQueueMessage, stringifyQueueMessage } from './utils.js';
+
+const WORKFLOW_QUEUE_NAME = /^__(?:[a-z][a-z0-9]*_)?wkf_workflow_.+$/;
 
 const generateUlid = monotonicFactory();
 
@@ -56,9 +60,10 @@ function getBaseUrl(configBaseUrl?: string): string {
  */
 interface BufferedMessage {
   queueName: ValidQueueName;
-  serialized: Buffer;
+  serialized: string;
   messageId: MessageId;
-  pathname: string;
+  /** Earliest delivery time, for a message queued with `delaySeconds`. */
+  notBefore: number;
 }
 
 /**
@@ -77,8 +82,6 @@ export function createQueue(config: QueueConfig = {}): {
     baseUrl: config.baseUrl ?? 'default',
     concurrency: config.concurrency ?? 20,
   });
-
-  const transport = new JsonTransport();
 
   // Track recently queued idempotency keys with their results.
   // Uses a short TTL to deduplicate concurrent duplicate messages
@@ -129,6 +132,10 @@ export function createQueue(config: QueueConfig = {}): {
    * Processes a single message by making an HTTP request to the workflow server.
    */
   async function processMessage(msg: BufferedMessage): Promise<void> {
+    const wait = msg.notBefore - Date.now();
+    if (wait > 0) {
+      await new Promise((r) => setTimeout(r, wait));
+    }
     await acquireConcurrency();
 
     try {
@@ -139,7 +146,7 @@ export function createQueue(config: QueueConfig = {}): {
 
         try {
           const response = await fetch(
-            `${getBaseUrl(config.baseUrl)}/.well-known/workflow/v1/${msg.pathname}`,
+            `${getBaseUrl(config.baseUrl)}${WORKFLOW_FLOW_ROUTE}`,
             {
               method: 'POST',
               headers: {
@@ -162,7 +169,7 @@ export function createQueue(config: QueueConfig = {}): {
           if (response.status === 503) {
             try {
               const { timeoutSeconds } = JSON.parse(text);
-              if (typeof timeoutSeconds === 'number') {
+              if (typeof timeoutSeconds === 'number' && timeoutSeconds >= 0) {
                 // Wait and retry
                 await new Promise((r) =>
                   setTimeout(r, timeoutSeconds * 1000)
@@ -217,8 +224,8 @@ export function createQueue(config: QueueConfig = {}): {
      */
     async queue(
       queueName: ValidQueueName,
-      message: unknown,
-      opts?: { deploymentId?: string; idempotencyKey?: string }
+      message: QueuePayload,
+      opts?: QueueOptions
     ): Promise<{ messageId: MessageId }> {
       // Check idempotency with TTL - only dedupe truly concurrent messages.
       // This allows workflow continuations (which reuse idempotency keys)
@@ -250,24 +257,17 @@ export function createQueue(config: QueueConfig = {}): {
         }
       }
 
-      // Serialize the message
-      const serialized = transport.serialize(message);
-
-      // Determine endpoint based on queue type
-      let pathname: string;
-      if (queueName.startsWith('__wkf_step_')) {
-        pathname = 'step';
-      } else if (queueName.startsWith('__wkf_workflow_')) {
-        pathname = 'flow';
-      } else {
+      // Workflow runs and queued steps are both delivered to the flow route.
+      if (!WORKFLOW_QUEUE_NAME.test(queueName)) {
         throw new Error(`Unknown queue prefix in: ${queueName}`);
       }
 
       const bufferedMsg: BufferedMessage = {
         queueName,
-        serialized,
+        serialized: stringifyQueueMessage(message),
         messageId,
-        pathname,
+        // A wait continuation is an ordinary message delivered after a delay.
+        notBefore: Date.now() + (opts?.delaySeconds ?? 0) * 1000,
       };
 
       if (isStarted) {
@@ -291,7 +291,7 @@ export function createQueue(config: QueueConfig = {}): {
       handler: (
         message: unknown,
         meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }
-      ) => Promise<void | { timeoutSeconds: number }>
+      ) => Promise<unknown>
     ): (req: Request) => Promise<Response> {
       // Schema for validating required headers
       const HeaderParser = z.object({
@@ -327,14 +327,17 @@ export function createQueue(config: QueueConfig = {}): {
         }
 
         // Deserialize the message
-        const body = await new JsonTransport().deserialize(req.body);
+        const body = parseQueueMessage(await req.text());
 
         try {
           // Call the actual handler
-          const result = await handler(body, { attempt, queueName, messageId });
+          const result = (await handler(body, { attempt, queueName, messageId })) as
+            | { timeoutSeconds?: unknown }
+            | undefined;
 
           // Check if handler requests a retry
-          if (result?.timeoutSeconds) {
+          // The handler asks for a redelivery after a delay (0 is "now").
+          if (typeof result?.timeoutSeconds === 'number' && result.timeoutSeconds >= 0) {
             return Response.json(
               { timeoutSeconds: result.timeoutSeconds },
               { status: 503 }

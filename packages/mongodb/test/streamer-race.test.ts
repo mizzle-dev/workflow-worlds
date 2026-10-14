@@ -50,11 +50,11 @@ describe('streamer race conditions', () => {
       const streamName = `test-stream-race-${id}`;
       const runId = `wrun_test-${id}`;
 
-      const readable = await streamer.readFromStream(streamName);
+      const readable = await streamer.streams.get(runId, streamName);
       const readPromise = withTimeout(readText(readable), 5000);
 
-      await streamer.writeToStream(streamName, runId, encoder.encode(expected));
-      await streamer.closeStream(streamName, runId);
+      await streamer.streams.write(runId, streamName, encoder.encode(expected));
+      await streamer.streams.close(runId, streamName);
 
       const result = await readPromise;
       expect(result).toBe(expected);

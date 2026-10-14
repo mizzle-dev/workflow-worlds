@@ -13,7 +13,7 @@
  * Each file has TODO markers showing where to swap in your implementation.
  */
 
-import type { World } from '@workflow/world';
+import { mintedSpecVersion, type World } from '@workflow/world';
 import { createQueue } from './queue.js';
 import type { QueueConfig } from './queue.js';
 import { createStorage } from './storage.js';
@@ -54,6 +54,8 @@ export function createWorld(config: StarterWorldConfig = {}): World {
   debug('Initialization complete');
 
   return {
+    specVersion: mintedSpecVersion(),
+
     // Spread all storage methods
     ...storage,
 

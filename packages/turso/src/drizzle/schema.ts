@@ -16,6 +16,7 @@ import {
   primaryKey,
 } from 'drizzle-orm/sqlite-core';
 import { encode, decode } from 'cbor-x';
+import { sql } from 'drizzle-orm';
 
 /**
  * Custom CBOR column type for Drizzle.
@@ -64,8 +65,11 @@ export const runs = sqliteTable(
     // CBOR columns for type-preserving storage
     input: Cbor<unknown[]>()('input'),
     output: Cbor<unknown>()('output'),
-    error: Cbor<{ message: string; stack?: string; code?: string }>()('error'),
+    error: Cbor<unknown>()('error'),
+    errorCode: text('error_code'),
     executionContext: Cbor<Record<string, unknown>>()('execution_context'),
+    attributes: Cbor<Record<string, string>>()('attributes'),
+    specVersion: integer('spec_version'),
 
     // Timestamps as TEXT (ISO strings) - SQLite doesn't have native timestamp
     startedAt: text('started_at'),
@@ -99,6 +103,7 @@ export const steps = sqliteTable(
 
     attempt: integer('attempt').default(0),
     retryAfter: text('retry_after'),
+    specVersion: integer('spec_version'),
     startedAt: text('started_at'),
     completedAt: text('completed_at'),
     createdAt: text('created_at').notNull(),
@@ -114,23 +119,39 @@ export const steps = sqliteTable(
 // Workflow Events
 // =============================================================================
 
+// Event IDs are positions in their run's log (`evnt_` + a zero-padded slot),
+// so they are only unique within a run: the primary key is (run_id, event_id).
+// The partial unique index makes a second creation of the same step, hook or
+// wait fail at the insert, whichever path the creation took. It only covers
+// rows written since `spec_version` was recorded per event, because logs
+// written before then were never deduplicated.
 export const events = sqliteTable(
   'workflow_events',
   {
-    eventId: text('event_id').primaryKey(),
     runId: text('run_id').notNull(),
+    eventId: text('event_id').notNull(),
     stepId: text('step_id'),
     eventType: text('type').notNull(),
     correlationId: text('correlation_id'),
 
     // Full event payload as CBOR (preserves Date in eventData.resumeAt)
     payload: Cbor<Record<string, unknown>>()('payload'),
+    specVersion: integer('spec_version'),
 
     createdAt: text('created_at').notNull(),
   },
   (table) => [
-    index('idx_events_run').on(table.runId, table.eventId),
-    index('idx_events_correlation').on(table.correlationId, table.eventId),
+    primaryKey({ columns: [table.runId, table.eventId] }),
+    index('idx_events_correlation').on(
+      table.runId,
+      table.correlationId,
+      table.eventId
+    ),
+    uniqueIndex('idx_events_entity_creation')
+      .on(table.runId, table.correlationId, table.eventType)
+      .where(
+        sql`${table.eventType} IN ('step_created', 'hook_created', 'wait_created', 'wait_completed') AND ${table.specVersion} IS NOT NULL`
+      ),
   ]
 );
 
@@ -146,6 +167,9 @@ export const hooks = sqliteTable(
     token: text('token').notNull(),
     displayName: text('display_name'),
     metadata: Cbor<unknown>()('metadata'),
+    specVersion: integer('spec_version'),
+    isWebhook: integer('is_webhook', { mode: 'boolean' }),
+    isSystem: integer('is_system', { mode: 'boolean' }),
     ownerId: text('owner_id').notNull(),
     projectId: text('project_id').notNull(),
     environment: text('environment').notNull(),
@@ -158,6 +182,25 @@ export const hooks = sqliteTable(
     index('idx_hooks_run').on(table.runId),
     uniqueIndex('idx_hooks_token').on(table.token),
   ]
+);
+
+// =============================================================================
+// Workflow Waits
+// =============================================================================
+
+export const waits = sqliteTable(
+  'workflow_waits',
+  {
+    runId: text('run_id').notNull(),
+    waitId: text('wait_id').notNull(),
+    status: text('status').notNull().default('waiting'),
+    resumeAt: text('resume_at'),
+    completedAt: text('completed_at'),
+    specVersion: integer('spec_version'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.runId, table.waitId] })]
 );
 
 // =============================================================================
@@ -209,6 +252,8 @@ export const streamChunks = sqliteTable(
 // Run Spec Versions
 // =============================================================================
 
+// Legacy: spec versions now live on `workflow_runs.spec_version`. Kept so
+// existing databases migrate; nothing reads or writes it.
 export const runSpecVersions = sqliteTable('workflow_run_versions', {
   runId: text('run_id').primaryKey(),
   specVersion: integer('spec_version').notNull(),

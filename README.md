@@ -2,15 +2,17 @@
 
 Custom World implementations for the [Workflow DevKit](https://github.com/vercel/workflow).
 
-## Workflow 4.1 Status
+## Workflow 5 Status
 
-This repository now targets the Workflow 4.1 world contract (`@workflow/world@4.1.x`).
+This repository targets the Workflow 5 world contract (`@workflow/world@5.x`, `workflow@5.x`).
 
-- World implementations now use event-sourced state transitions via `storage.events.create(...)`.
-- Legacy runs are still supported with guarded compatibility behavior.
+- Event IDs are positions in their run's log (`evnt_` + a zero-padded, 1-based slot), allocated by the write that appends the event.
+- Worlds declare their protocol version with `mintedSpecVersion()` from `@workflow/world`.
+- Streams live under `world.streams.*`, with the run ID first.
+- Runs created by a 4.x World cannot be replayed by these versions. Drain in-flight runs on the old version before upgrading a World that serves every run from one deployment.
 - Turso requires running migrations before use and after upgrades (`pnpm exec workflow-turso-setup`).
 
-See [Workflow 4.1 Migration Guide](./docs/07-workflow-4.1-migration.md) for upgrade steps and rollout checks.
+See the upstream [Upgrading a World to v5](https://workflow.dev/worlds/upgrading-to-v5) guide. The guides in [docs/](./docs/) were written for Workflow 4.1; where they disagree with it, the upstream guide is current.
 
 ## What is a World?
 

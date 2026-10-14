@@ -8,7 +8,8 @@
  * - **Queue**: resumeAt dates, payload preservation, idempotency
  * - **Hook Cleanup**: Token reuse after workflow completion
  * - **Streamer**: Binary data, named streams, null bytes
- * - **Event Sourcing**: Workflow 4.1 contract guards, resolveData='none', legacy/future compatibility
+ * - **Event Sourcing**: Workflow 5 contract guards, resolveData='none', legacy/future compatibility
+ * - **Slot Identity**: dense positional event IDs, concurrent appends, bump-and-report, lazy step start
  *
  * ## Usage
  *
@@ -49,3 +50,6 @@ export type { OutputPreservationTestOptions } from './output-preservation.js';
 
 export { eventSourcingTests } from './event-sourcing.js';
 export type { EventSourcingTestOptions } from './event-sourcing.js';
+
+export { slotIdentityTests } from './slot-identity.js';
+export type { SlotIdentityTestOptions } from './slot-identity.js';

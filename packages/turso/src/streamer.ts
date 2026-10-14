@@ -7,10 +7,14 @@
 
 import { EventEmitter } from 'node:events';
 import type { Client, Row } from '@libsql/client';
-import type { Streamer } from '@workflow/world';
-import { monotonicFactory } from 'ulid';
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  StreamInfoResponse,
+  Streamer,
+} from '@workflow/world';
+import { generateUlid } from './utils.js';
 
-const generateUlid = monotonicFactory();
 
 /**
  * Represents a single chunk in a stream.
@@ -86,51 +90,72 @@ export function createStreamer(config: StreamerConfig): Streamer {
     });
   }
 
-  return {
-    /**
-     * Writes a chunk of data to a named stream.
-     */
-    async writeToStream(
-      name: string,
-      runId: string | Promise<string>,
-      chunk: string | Uint8Array
-    ): Promise<void> {
-      // Await runId if it's a promise (ensures proper ordering)
-      const resolvedRunId = await runId;
-      await registerStream(resolvedRunId, name);
+  function toBytes(chunk: string | Uint8Array): Uint8Array {
+    return typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
+  }
 
-      const chunkId = `chnk_${generateUlid()}`;
-      const nowStr = new Date().toISOString();
-
-      // Convert to Uint8Array
-      let data: Uint8Array;
-      if (typeof chunk === 'string') {
-        data = new TextEncoder().encode(chunk);
-      } else {
-        data = chunk;
-      }
-
-      // Store the chunk as a blob
-      await client.execute({
+  async function insertChunks(name: string, chunks: Uint8Array[]): Promise<void> {
+    if (chunks.length === 0) return;
+    const nowStr = new Date().toISOString();
+    // Allocate every ID before writing so the batch keeps its order.
+    const written = chunks.map((data) => ({ chunkId: `chnk_${generateUlid()}`, data }));
+    await client.batch(
+      written.map(({ chunkId, data }) => ({
         sql: `INSERT INTO stream_chunks (chunk_id, stream_name, data, is_eof, created_at)
               VALUES (?, ?, ?, 0, ?)`,
         args: [chunkId, name, data, nowStr],
-      });
+      })),
+      'write'
+    );
+    for (const { chunkId, data } of written) {
+      emitter.emit(`chunk:${name}`, { chunkId, data, eof: false });
+    }
+  }
 
-      // Emit real-time notification
-      const streamChunk: StreamChunk = { chunkId, data, eof: false };
-      emitter.emit(`chunk:${name}`, streamChunk);
+  /**
+   * Data chunks only, in order, up to the first EOF marker. A producer that
+   * retries its close can append rows after the first EOF; readers ignore them.
+   */
+  async function loadDataChunks(name: string): Promise<{ chunks: StreamChunk[]; done: boolean }> {
+    const result = await client.execute({
+      sql: `SELECT * FROM stream_chunks WHERE stream_name = ? ORDER BY chunk_id ASC`,
+      args: [name],
+    });
+    const chunks: StreamChunk[] = [];
+    for (const row of result.rows) {
+      const chunk = rowToChunk(row);
+      if (chunk.eof) return { chunks, done: true };
+      chunks.push(chunk);
+    }
+    return { chunks, done: false };
+  }
+
+  const streams: Streamer['streams'] = {
+    /**
+     * Writes a chunk of data to a named stream.
+     */
+    async write(runId: string, name: string, chunk: string | Uint8Array): Promise<void> {
+      await registerStream(await runId, name);
+      await insertChunks(name, [toBytes(chunk)]);
+    },
+
+    /**
+     * Writes several chunks to a named stream in one batch.
+     */
+    async writeMulti(
+      runId: string,
+      name: string,
+      chunks: (string | Uint8Array)[]
+    ): Promise<void> {
+      await registerStream(await runId, name);
+      await insertChunks(name, chunks.map(toBytes));
     },
 
     /**
      * Signals the end of a stream.
      */
-    async closeStream(
-      name: string,
-      runId: string | Promise<string>
-    ): Promise<void> {
-      const resolvedRunId = await runId;
-      await registerStream(resolvedRunId, name);
+    async close(runId: string, name: string): Promise<void> {
+      await registerStream(await runId, name);
 
       const chunkId = `chnk_${generateUlid()}`;
       const nowStr = new Date().toISOString();
@@ -146,7 +171,7 @@ export function createStreamer(config: StreamerConfig): Streamer {
       emitter.emit(`close:${name}`);
     },
 
-    async listStreamsByRunId(runId: string): Promise<string[]> {
+    async list(runId: string): Promise<string[]> {
       const result = await client.execute({
         sql: `SELECT stream_name FROM stream_runs
               WHERE run_id = ?
@@ -156,13 +181,44 @@ export function createStreamer(config: StreamerConfig): Streamer {
       return result.rows.map((row) => row.stream_name as string);
     },
 
+    async getChunks(
+      _runId: string,
+      name: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse> {
+      const limit = options?.limit ?? 100;
+      const start = options?.cursor ? Number.parseInt(options.cursor, 10) || 0 : 0;
+      const { chunks, done } = await loadDataChunks(name);
+      const page = chunks.slice(start, start + limit);
+      const hasMore = start + page.length < chunks.length;
+      return {
+        data: page.map((chunk, i) => ({ index: start + i, data: Uint8Array.from(chunk.data) })),
+        cursor: hasMore ? String(start + page.length) : null,
+        hasMore,
+        done,
+      };
+    },
+
+    async getInfo(_runId: string, name: string): Promise<StreamInfoResponse> {
+      const { chunks, done } = await loadDataChunks(name);
+      return { tailIndex: chunks.length - 1, done };
+    },
+
     /**
      * Returns a ReadableStream for consuming stream data.
      */
-    async readFromStream(
+    async get(
+      _runId: string,
       name: string,
-      startIndex = 0
+      requestedStartIndex = 0
     ): Promise<ReadableStream<Uint8Array>> {
+      // A negative start counts back from the current end of the stream.
+      let startIndex = requestedStartIndex;
+      if (startIndex < 0) {
+        const { chunks } = await loadDataChunks(name);
+        startIndex = Math.max(0, chunks.length + startIndex);
+      }
+
       // Store cleanup function so cancel() can access it
       let cleanup: (() => void) | null = null;
 
@@ -300,4 +356,6 @@ export function createStreamer(config: StreamerConfig): Streamer {
       });
     },
   };
+
+  return { streams };
 }

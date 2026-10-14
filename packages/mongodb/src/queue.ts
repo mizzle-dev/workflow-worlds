@@ -10,19 +10,33 @@
  * - Stuck message recovery
  */
 
-import { JsonTransport } from '@vercel/queue';
-import type {
-  Queue,
-  MessageId,
-  ValidQueueName,
-  QueuePrefix,
+import {
+  WORKFLOW_FLOW_ROUTE,
+  type MessageId,
+  type Queue,
+  type QueueOptions,
+  type QueuePayload,
+  type QueuePrefix,
+  type ValidQueueName,
 } from '@workflow/world';
 import type { Collection, ChangeStream, MongoClient } from 'mongodb';
-import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
-import { debug } from './utils.js';
+import { debug, parseQueueMessage, stringifyQueueMessage, generateUlid } from './utils.js';
 
-const generateUlid = monotonicFactory();
+const WORKFLOW_QUEUE_NAME = /^__(?:[a-z][a-z0-9]*_)?wkf_workflow_.+$/;
+
+/**
+ * The stored payload as the request body. Messages are stored as JSON text;
+ * ones queued by earlier versions of this World were stored as bytes.
+ */
+function payloadText(payload: unknown): string {
+  if (typeof payload === 'string') return payload;
+  if (payload && typeof (payload as { value?: unknown }).value === 'function') {
+    return Buffer.from((payload as { value: () => Uint8Array }).value()).toString('utf-8');
+  }
+  return Buffer.from(payload as Uint8Array).toString('utf-8');
+}
+
 
 // =============================================================================
 // Configuration
@@ -138,7 +152,7 @@ type MessageStatus = 'pending' | 'processing' | 'completed' | 'failed';
 interface QueuedMessage {
   messageId: MessageId;
   queueName: ValidQueueName;
-  payload: Buffer;
+  payload: string;
   status: MessageStatus;
   attempt: number;
   maxRetries: number;
@@ -267,7 +281,6 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
   start: () => Promise<void>;
   close: () => Promise<void>;
 }> {
-  const transport = new JsonTransport();
 
   // Resolve configuration
   const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -519,11 +532,9 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
     state.inflightMessages.set(msg.messageId, { lockToken, abortController });
 
     try {
-      const pathname = msg.queueName.startsWith('__wkf_step_') ? 'step' : 'flow';
-
       try {
         const response = await fetch(
-          `${getBaseUrl(config.baseUrl)}/.well-known/workflow/v1/${pathname}`,
+          `${getBaseUrl(config.baseUrl)}${WORKFLOW_FLOW_ROUTE}`,
           {
             method: 'POST',
             headers: {
@@ -532,7 +543,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
               'x-vqs-message-id': msg.messageId,
               'x-vqs-message-attempt': String(msg.attempt),
             },
-            body: msg.payload,
+            body: payloadText(msg.payload),
             signal: abortController.signal,
           }
         );
@@ -551,7 +562,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
         if (response.status === 503) {
           try {
             const { timeoutSeconds } = JSON.parse(text);
-            if (typeof timeoutSeconds === 'number') {
+            if (typeof timeoutSeconds === 'number' && timeoutSeconds >= 0) {
               await rescheduleMessage(msg.messageId, lockToken, timeoutSeconds);
               return;
             }
@@ -805,17 +816,22 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
 
     async queue(
       queueName: ValidQueueName,
-      message: unknown,
-      opts?: { deploymentId?: string; idempotencyKey?: string }
+      message: QueuePayload,
+      opts?: QueueOptions
     ): Promise<{ messageId: MessageId }> {
       // Validate queue type
-      if (!queueName.startsWith('__wkf_step_') && !queueName.startsWith('__wkf_workflow_')) {
+      if (!WORKFLOW_QUEUE_NAME.test(queueName)) {
         throw new Error(`Unknown queue prefix in: ${queueName}`);
       }
 
       const now = new Date();
       const messageId = `msg_${generateUlid()}` as MessageId;
-      const serialized = transport.serialize(message);
+      const serialized = stringifyQueueMessage(message);
+      // A wait continuation is an ordinary message delivered after a delay.
+      const scheduledFor =
+        opts?.delaySeconds && opts.delaySeconds > 0
+          ? new Date(now.getTime() + opts.delaySeconds * 1000)
+          : now;
 
       // Atomic upsert for idempotency
       if (opts?.idempotencyKey) {
@@ -836,7 +852,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
                 attempt: 1,
                 maxRetries,
                 createdAt: now,
-                scheduledFor: now,
+                scheduledFor,
                 idempotencyKey: opts.idempotencyKey,
               },
               $set: { updatedAt: now },
@@ -871,7 +887,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
         maxRetries,
         createdAt: now,
         updatedAt: now,
-        scheduledFor: now,
+        scheduledFor,
       });
 
       return { messageId };
@@ -882,7 +898,7 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
       handler: (
         message: unknown,
         meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }
-      ) => Promise<void | { timeoutSeconds: number }>
+      ) => Promise<unknown>
     ): (req: Request) => Promise<Response> {
       const HeaderParser = z.object({
         'x-vqs-queue-name': z.string(),
@@ -910,12 +926,15 @@ export async function createQueue(config: QueueConfig = {}): Promise<{
           return Response.json({ error: 'Unhandled queue' }, { status: 400 });
         }
 
-        const body = await new JsonTransport().deserialize(req.body);
+        const body = parseQueueMessage(await req.text());
 
         try {
-          const result = await handler(body, { attempt, queueName, messageId });
+          const result = (await handler(body, { attempt, queueName, messageId })) as
+            | { timeoutSeconds?: unknown }
+            | undefined;
 
-          if (result?.timeoutSeconds) {
+          // The handler asks for a redelivery after a delay (0 is "now").
+          if (typeof result?.timeoutSeconds === 'number' && result.timeoutSeconds >= 0) {
             return Response.json(
               { timeoutSeconds: result.timeoutSeconds },
               { status: 503 }
