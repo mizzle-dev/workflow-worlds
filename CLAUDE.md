@@ -25,13 +25,15 @@ cd packages/{name} && pnpm build && pnpm test
 
 ```typescript
 interface World extends Queue, Storage, Streamer {
+  specVersion: number;      // mintedSpecVersion() from @workflow/world
   start?(): Promise<void>;  // Optional initialization
+  close?(): Promise<void>;  // Optional teardown
 }
 ```
 
 - **Storage** - 4 namespaces: `runs`, `steps`, `events`, `hooks`
 - **Queue** - `getDeploymentId()`, `queue()`, `createQueueHandler()`
-- **Streamer** - `writeToStream()`, `closeStream()`, `readFromStream()`
+- **Streamer** - `streams.write()`, `streams.close()`, `streams.get()`, `streams.list()`, `streams.getChunks()`, `streams.getInfo()` (run ID first)
 
 ### Export Pattern
 
@@ -47,16 +49,25 @@ The runtime imports and calls this function via `WORKFLOW_TARGET_WORLD`.
 
 ### ID Generation
 
-Use monotonic ULIDs with prefixes:
+Run IDs are monotonic ULIDs with a prefix:
 ```typescript
 import { monotonicFactory } from 'ulid';
 const generateUlid = monotonicFactory();
 
 const runId = `wrun_${generateUlid()}`;
-const stepId = `step_${generateUlid()}`;
-const eventId = `evnt_${generateUlid()}`;
-const hookId = `hook_${generateUlid()}`;
 ```
+
+Event IDs are NOT ULIDs. An event's ID is its position in its run's log:
+```typescript
+import { slotToEventId } from '@workflow/world';
+slotToEventId(1); // 'evnt_00000000000000000000000001', the run's first event
+```
+
+The position must be allocated by the same atomic write that stores the
+event, and the store must settle two writers racing for one position (a
+unique key on `(runId, eventId)`, a conditional write, a transaction, or a
+Lua script). Never read a maximum in process and add one outside that write.
+See `slot-identity.ts` in `@workflow-worlds/testing` for the contract tests.
 
 ## Critical Patterns
 

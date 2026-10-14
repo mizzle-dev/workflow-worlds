@@ -11,18 +11,20 @@
  */
 
 import type { Client, InValue } from '@libsql/client';
-import { JsonTransport } from '@vercel/queue';
-import type {
-  Queue,
-  MessageId,
-  ValidQueueName,
-  QueuePrefix,
+import {
+  WORKFLOW_FLOW_ROUTE,
+  type MessageId,
+  type Queue,
+  type QueueOptions,
+  type QueuePayload,
+  type QueuePrefix,
+  type ValidQueueName,
 } from '@workflow/world';
-import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
-import { debug } from './utils.js';
+import { debug, parseQueueMessage, stringifyQueueMessage, generateUlid } from './utils.js';
 
-const generateUlid = monotonicFactory();
+const WORKFLOW_QUEUE_NAME = /^__(?:[a-z][a-z0-9]*_)?wkf_workflow_.+$/;
+
 
 /**
  * Configuration for the queue.
@@ -99,7 +101,6 @@ export function createQueue(config: QueueConfig): {
   close: () => Promise<void>;
 } {
   const { client } = config;
-  const transport = new JsonTransport();
 
   // Track recently queued idempotency keys with their results (in-memory for speed).
   const recentlyQueuedKeys = new Map<
@@ -148,11 +149,9 @@ export function createQueue(config: QueueConfig): {
     payload: string,
     attempt: number
   ): Promise<void> {
-    const pathname = queueName.startsWith('__wkf_step_') ? 'step' : 'flow';
-
     try {
       const response = await fetch(
-        `${getBaseUrl(config.baseUrl)}/.well-known/workflow/v1/${pathname}`,
+        `${getBaseUrl(config.baseUrl)}${WORKFLOW_FLOW_ROUTE}`,
         {
           method: 'POST',
           headers: {
@@ -180,7 +179,7 @@ export function createQueue(config: QueueConfig): {
       if (response.status === 503) {
         try {
           const { timeoutSeconds } = JSON.parse(text);
-          if (typeof timeoutSeconds === 'number') {
+          if (typeof timeoutSeconds === 'number' && timeoutSeconds >= 0) {
             // Reschedule without counting as failure
             const notBefore = new Date(Date.now() + timeoutSeconds * 1000).toISOString();
             await client.execute({
@@ -237,57 +236,46 @@ export function createQueue(config: QueueConfig): {
 
   /**
    * Poll for and process pending messages.
-   * Uses a write transaction to atomically claim messages and prevent race conditions.
+   * Claims messages with a single atomic UPDATE so concurrent pollers never take the same one.
    */
   async function pollAndProcess(): Promise<void> {
     if (!isRunning || isShuttingDown) {
       return;
     }
+    let claimed = false;
 
     try {
       const now = new Date().toISOString();
 
-      // Use a write transaction to atomically select and claim a message
-      // This prevents race conditions where multiple pollers claim the same message
-      const tx = await client.transaction('write');
+      // Claim one ready message in a single statement. A single UPDATE is
+      // atomic on its own, and unlike `client.transaction()` it does not hand
+      // the connection off and open a new one on the next poll.
+      const result = await client.execute({
+        sql: `UPDATE queue_messages SET status = 'processing'
+              WHERE message_id = (
+                SELECT message_id FROM queue_messages
+                WHERE status = 'pending' AND (not_before IS NULL OR not_before <= ?)
+                ORDER BY created_at ASC
+                LIMIT 1
+              ) AND status = 'pending'
+              RETURNING message_id, queue_name, payload, attempt`,
+        args: [now],
+      });
       let messageId: MessageId | null = null;
       let queueName: ValidQueueName | null = null;
       let payload: string | null = null;
       let attempt = 1;
-
-      try {
-        // Find a pending message that's ready to process
-        const result = await tx.execute({
-          sql: `SELECT message_id, queue_name, payload, attempt
-                FROM queue_messages
-                WHERE status = 'pending' AND (not_before IS NULL OR not_before <= ?)
-                ORDER BY created_at ASC
-                LIMIT 1`,
-          args: [now],
-        });
-
-        if (result.rows.length > 0) {
-          const row = result.rows[0];
-          messageId = row.message_id as MessageId;
-          queueName = row.queue_name as ValidQueueName;
-          payload = row.payload as string;
-          attempt = (row.attempt as number) || 1;
-
-          // Mark as processing within the same transaction
-          await tx.execute({
-            sql: `UPDATE queue_messages SET status = 'processing' WHERE message_id = ?`,
-            args: [messageId],
-          });
-        }
-
-        await tx.commit();
-      } catch (err) {
-        await tx.rollback();
-        throw err;
+      if (result.rows.length > 0) {
+        const row = result.rows[0];
+        messageId = row.message_id as MessageId;
+        queueName = row.queue_name as ValidQueueName;
+        payload = row.payload as string;
+        attempt = (row.attempt as number) || 1;
       }
 
-      // Process outside the transaction to avoid holding the lock
+      // Process outside the claim so the database is not held during delivery
       if (messageId && queueName && payload) {
+        claimed = true;
         await acquireConcurrency();
         processMessage(messageId, queueName, payload, attempt)
           .catch((err) => {
@@ -301,9 +289,10 @@ export function createQueue(config: QueueConfig): {
       debug('Poll error:', err);
     }
 
-    // Schedule next poll
+    // Schedule next poll. Poll again right away after claiming a message, so a
+    // backlog drains at the concurrency limit rather than one per interval.
     if (isRunning && !isShuttingDown) {
-      pollTimeout = setTimeout(pollAndProcess, POLL_INTERVAL_MS);
+      pollTimeout = setTimeout(pollAndProcess, claimed ? 0 : POLL_INTERVAL_MS);
     }
   }
 
@@ -321,8 +310,8 @@ export function createQueue(config: QueueConfig): {
      */
     async queue(
       queueName: ValidQueueName,
-      message: unknown,
-      opts?: { deploymentId?: string; idempotencyKey?: string }
+      message: QueuePayload,
+      opts?: QueueOptions
     ): Promise<{ messageId: MessageId }> {
       const now = Date.now();
 
@@ -335,11 +324,16 @@ export function createQueue(config: QueueConfig): {
       }
 
       const messageId = `msg_${generateUlid()}` as MessageId;
-      const serialized = transport.serialize(message);
+      const serialized = stringifyQueueMessage(message);
       const nowStr = new Date().toISOString();
+      // A wait continuation is an ordinary message delivered after a delay.
+      const notBefore =
+        opts?.delaySeconds && opts.delaySeconds > 0
+          ? new Date(now + opts.delaySeconds * 1000).toISOString()
+          : nowStr;
 
       // Validate queue type
-      if (!queueName.startsWith('__wkf_step_') && !queueName.startsWith('__wkf_workflow_')) {
+      if (!WORKFLOW_QUEUE_NAME.test(queueName)) {
         throw new Error(`Unknown queue prefix in: ${queueName}`);
       }
 
@@ -355,7 +349,7 @@ export function createQueue(config: QueueConfig): {
             serialized,
             opts?.idempotencyKey ?? null,
             MAX_RETRIES,
-            nowStr,
+            notBefore,
             nowStr,
           ] as InValue[],
         });
@@ -406,7 +400,7 @@ export function createQueue(config: QueueConfig): {
           queueName: ValidQueueName;
           messageId: MessageId;
         }
-      ) => Promise<void | { timeoutSeconds: number }>
+      ) => Promise<unknown>
     ): (req: Request) => Promise<Response> {
       const HeaderParser = z.object({
         'x-vqs-queue-name': z.string(),
@@ -438,12 +432,15 @@ export function createQueue(config: QueueConfig): {
           return Response.json({ error: 'Unhandled queue' }, { status: 400 });
         }
 
-        const body = await new JsonTransport().deserialize(req.body);
+        const body = parseQueueMessage(await req.text());
 
         try {
-          const result = await handler(body, { attempt, queueName, messageId });
+          const result = (await handler(body, { attempt, queueName, messageId })) as
+            | { timeoutSeconds?: unknown }
+            | undefined;
 
-          if (result?.timeoutSeconds) {
+          // The handler asks for a redelivery after a delay (0 is "now").
+          if (typeof result?.timeoutSeconds === 'number' && result.timeoutSeconds >= 0) {
             return Response.json(
               { timeoutSeconds: result.timeoutSeconds },
               { status: 503 }

@@ -1,7 +1,7 @@
 /**
  * Event Sourcing Contract Test Suite
  *
- * Tests Workflow 4.1 event-sourcing invariants:
+ * Tests Workflow 5 event-sourcing invariants:
  * - event creation contract and guard rails
  * - resolveData='none' projection behavior
  * - legacy/future spec-version compatibility behavior
@@ -11,11 +11,18 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
   type CreateEventRequest,
   type RunCreatedEventRequest,
   type Storage,
 } from '@workflow/world';
-import { RunNotSupportedError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  HookNotFoundError,
+  RunExpiredError,
+  RunNotSupportedError,
+  TooEarlyError,
+} from '@workflow/errors';
 import {
   cancelRun,
   completeRun,
@@ -48,6 +55,45 @@ async function expectErrorStatus(
       expect(err.message ?? String(error)).toMatch(messagePattern);
     }
   }
+}
+
+/**
+ * Workflow 5 classifies World errors by type rather than by status code:
+ * the runtime matches them with each class's `is()`.
+ */
+async function expectErrorType(
+  promise: Promise<unknown>,
+  isType: (value: unknown) => boolean,
+  messagePattern?: RegExp
+): Promise<void> {
+  let thrown: unknown;
+  try {
+    await promise;
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown, 'expected the call to fail').toBeDefined();
+  expect(isType(thrown), `unexpected error: ${String(thrown)}`).toBe(true);
+  if (messagePattern) {
+    expect((thrown as { message?: string }).message ?? String(thrown)).toMatch(messagePattern);
+  }
+}
+
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+/** A ULID for the current instant, which is what the runtime mints for run IDs. */
+function ulidNow(): string {
+  let time = Date.now();
+  let timePart = '';
+  for (let i = 0; i < 10; i++) {
+    timePart = CROCKFORD[time % 32] + timePart;
+    time = Math.floor(time / 32);
+  }
+  let randomPart = '';
+  for (let i = 0; i < 16; i++) {
+    randomPart += CROCKFORD[Math.floor(Math.random() * 32)];
+  }
+  return timePart + randomPart;
 }
 
 async function createRunWithSpecVersion(
@@ -96,7 +142,7 @@ export function eventSourcingTests(options: EventSourcingTestOptions) {
 
     describe('create contract guards', () => {
       test('accepts client-provided runId for run_created', async () => {
-        const clientRunId = 'wrun_client_provided_id';
+        const clientRunId = `wrun_${ulidNow()}`;
         const result = await storage.events.create(
           clientRunId as unknown as null,
           {
@@ -175,12 +221,22 @@ export function eventSourcingTests(options: EventSourcingTestOptions) {
 
         await completeRun(storage, run.runId, { ok: true });
 
-        await expectErrorStatus(
+        await expectErrorType(
           storage.events.create(run.runId, {
             eventType: 'run_started',
             specVersion: SPEC_VERSION_CURRENT,
           }),
-          409,
+          RunExpiredError.is,
+          /terminal state/i
+        );
+
+        await expectErrorType(
+          storage.events.create(run.runId, {
+            eventType: 'run_completed',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: { output: { again: true } },
+          }),
+          EntityConflictError.is,
           /terminal state/i
         );
       });
@@ -194,25 +250,25 @@ export function eventSourcingTests(options: EventSourcingTestOptions) {
 
         await completeRun(storage, run.runId, { done: true });
 
-        await expectErrorStatus(
+        await expectErrorType(
           storage.events.create(run.runId, {
             eventType: 'step_created',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: `wstep_terminal-${Date.now()}`,
             eventData: { stepName: 'step', input: [] },
           }),
-          409,
+          EntityConflictError.is,
           /terminal run/i
         );
 
-        await expectErrorStatus(
+        await expectErrorType(
           storage.events.create(run.runId, {
             eventType: 'hook_created',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: `whook_terminal-${Date.now()}`,
             eventData: { token: `terminal-hook-${Date.now()}`, metadata: {} },
           }),
-          409,
+          EntityConflictError.is,
           /terminal run/i
         );
       });
@@ -232,19 +288,54 @@ export function eventSourcingTests(options: EventSourcingTestOptions) {
         });
         await completeStep(storage, run.runId, stepId, { done: true });
 
-        await expectErrorStatus(
+        await expectErrorType(
           storage.events.create(run.runId, {
             eventType: 'step_started',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
             eventData: {},
           }),
-          409,
+          EntityConflictError.is,
           /terminal state/i
         );
       });
 
-      test('enforces retryAfter gate with 425', async () => {
+      test('refuses step_started on a terminal run even when the step is running', async () => {
+        const run = await createRun(storage, {
+          deploymentId: 'test-deployment',
+          workflowName: 'terminal-run-step-start',
+          input: [],
+        });
+        const stepId = `wstep_terminal-run-start-${Date.now()}`;
+
+        await createStep(storage, run.runId, {
+          stepId,
+          stepName: 'inFlightStep',
+          input: [],
+        });
+        await storage.events.create(run.runId, {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+        });
+        await cancelRun(storage, run.runId);
+
+        // A redelivered start of a step that is still `running`.
+        await expectErrorType(
+          storage.events.create(run.runId, {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+          }),
+          RunExpiredError.is
+        );
+
+        // The step already in flight may still record its outcome.
+        const completed = await completeStep(storage, run.runId, stepId, { late: true });
+        expect(completed?.status).toBe('completed');
+      });
+
+      test('enforces retryAfter gate with TooEarlyError', async () => {
         const run = await createRun(storage, {
           deploymentId: 'test-deployment',
           workflowName: 'retry-after-gate',
@@ -267,14 +358,14 @@ export function eventSourcingTests(options: EventSourcingTestOptions) {
           retryAfter
         );
 
-        await expectErrorStatus(
+        await expectErrorType(
           storage.events.create(run.runId, {
             eventType: 'step_started',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
             eventData: {},
           }),
-          425,
+          TooEarlyError.is,
           /retryAfter/i
         );
       });
@@ -286,13 +377,13 @@ export function eventSourcingTests(options: EventSourcingTestOptions) {
           input: [],
         });
 
-        await expectErrorStatus(
+        await expectErrorType(
           storage.events.create(run.runId, {
             eventType: 'hook_disposed',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: `whook_missing-${Date.now()}`,
           }),
-          404,
+          HookNotFoundError.is,
           /hook/i
         );
       });
@@ -393,13 +484,13 @@ export function eventSourcingTests(options: EventSourcingTestOptions) {
         });
         expect(hookReceived.event?.eventType).toBe('hook_received');
 
-        await expectErrorStatus(
+        await expectErrorType(
           storage.events.create(run.runId, {
             eventType: 'run_completed',
             specVersion: SPEC_VERSION_CURRENT,
             eventData: { output: { done: true } },
           }),
-          409,
+          EntityConflictError.is,
           /not supported for legacy runs/i
         );
 
@@ -411,7 +502,7 @@ export function eventSourcingTests(options: EventSourcingTestOptions) {
       });
 
       test('rejects events for future spec runs with RunNotSupportedError', async () => {
-        const run = await createRunWithSpecVersion(storage, SPEC_VERSION_CURRENT + 1);
+        const run = await createRunWithSpecVersion(storage, SPEC_VERSION_MAX_SUPPORTED + 1);
 
         try {
           await storage.events.create(run.runId, {

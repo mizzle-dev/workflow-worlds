@@ -6,12 +6,15 @@
  */
 
 import { EventEmitter } from 'node:events';
-import type { Streamer } from '@workflow/world';
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  StreamInfoResponse,
+  Streamer,
+} from '@workflow/world';
 import { MongoClient } from 'mongodb';
-import { monotonicFactory } from 'ulid';
-import { debug } from './utils.js';
+import { debug, generateUlid } from './utils.js';
 
-const generateUlid = monotonicFactory();
 
 /**
  * Represents a single chunk in a stream.
@@ -154,53 +157,68 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
     );
   }
 
-  const streamer: Streamer = {
+  /** Chunk data as bytes, whether it came back as BSON Binary or a Buffer. */
+  function chunkBytes(data: unknown): Uint8Array {
+    if (data instanceof Uint8Array) return data;
+    if (data && typeof (data as { value?: unknown }).value === 'function') {
+      return new Uint8Array((data as { value: () => Uint8Array }).value());
+    }
+    return new Uint8Array((data as { buffer?: ArrayBuffer })?.buffer ?? new ArrayBuffer(0));
+  }
+
+  async function insertChunks(name: string, chunks: (string | Uint8Array)[]): Promise<void> {
+    if (chunks.length === 0) return;
+    // Allocate every ID before writing so the batch keeps its order.
+    const docs: StreamChunk[] = chunks.map((chunk) => ({
+      chunkId: `chnk_${generateUlid()}`,
+      streamName: name,
+      data: typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk,
+      eof: false,
+      createdAt: new Date(),
+    }));
+    await chunksCollection.insertMany(docs.map((doc) => ({ ...doc })), { ordered: true });
+    // Emit real-time notification (for single-process)
+    for (const doc of docs) emitter.emit(`chunk:${name}`, doc);
+  }
+
+  /** Data chunks up to the first EOF marker, in order. */
+  async function loadDataChunks(name: string): Promise<{ chunks: Uint8Array[]; done: boolean }> {
+    const docs = await chunksCollection.find({ streamName: name }).sort({ chunkId: 1 }).toArray();
+    const chunks: Uint8Array[] = [];
+    for (const doc of docs) {
+      if (doc.eof) return { chunks, done: true };
+      chunks.push(chunkBytes(doc.data));
+    }
+    return { chunks, done: false };
+  }
+
+  const streams: Streamer['streams'] = {
     /**
      * Writes a chunk of data to a named stream.
      */
-    async writeToStream(
-      name: string,
-      runId: string | Promise<string>,
-      chunk: string | Uint8Array
-    ): Promise<void> {
+    async write(runId: string, name: string, chunk: string | Uint8Array): Promise<void> {
       // Await runId if it's a promise (ensures proper ordering)
-      const resolvedRunId = await runId;
-      await registerStream(resolvedRunId, name);
+      await registerStream(await runId, name);
+      await insertChunks(name, [chunk]);
+    },
 
-      const chunkId = `chnk_${generateUlid()}`;
-
-      // Convert to Uint8Array
-      let data: Uint8Array;
-      if (typeof chunk === 'string') {
-        data = new TextEncoder().encode(chunk);
-      } else {
-        data = chunk;
-      }
-
-      const streamChunk: StreamChunk = {
-        chunkId,
-        streamName: name,
-        data,
-        eof: false,
-        createdAt: new Date(),
-      };
-
-      // Store the chunk
-      await chunksCollection.insertOne(streamChunk);
-
-      // Emit real-time notification (for single-process)
-      emitter.emit(`chunk:${name}`, streamChunk);
+    /**
+     * Writes several chunks to a named stream in one insert.
+     */
+    async writeMulti(
+      runId: string,
+      name: string,
+      chunks: (string | Uint8Array)[]
+    ): Promise<void> {
+      await registerStream(await runId, name);
+      await insertChunks(name, chunks);
     },
 
     /**
      * Signals the end of a stream.
      */
-    async closeStream(
-      name: string,
-      runId: string | Promise<string>
-    ): Promise<void> {
-      const resolvedRunId = await runId;
-      await registerStream(resolvedRunId, name);
+    async close(runId: string, name: string): Promise<void> {
+      await registerStream(await runId, name);
 
       const chunkId = `chnk_${generateUlid()}`;
       const streamChunk: StreamChunk = {
@@ -218,7 +236,7 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
       emitter.emit(`close:${name}`);
     },
 
-    async listStreamsByRunId(runId: string): Promise<string[]> {
+    async list(runId: string): Promise<string[]> {
       const streamRuns = await streamRunsCollection
         .find({ runId })
         .sort({ streamName: 1 })
@@ -226,13 +244,44 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
       return streamRuns.map((streamRun) => streamRun.streamName);
     },
 
+    async getChunks(
+      _runId: string,
+      name: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse> {
+      const limit = options?.limit ?? 100;
+      const start = options?.cursor ? Number.parseInt(options.cursor, 10) || 0 : 0;
+      const { chunks, done } = await loadDataChunks(name);
+      const page = chunks.slice(start, start + limit);
+      const hasMore = start + page.length < chunks.length;
+      return {
+        data: page.map((data, i) => ({ index: start + i, data })),
+        cursor: hasMore ? String(start + page.length) : null,
+        hasMore,
+        done,
+      };
+    },
+
+    async getInfo(_runId: string, name: string): Promise<StreamInfoResponse> {
+      const { chunks, done } = await loadDataChunks(name);
+      return { tailIndex: chunks.length - 1, done };
+    },
+
     /**
      * Returns a ReadableStream for consuming stream data.
      */
-    async readFromStream(
+    async get(
+      _runId: string,
       name: string,
-      startIndex = 0
+      requestedStartIndex = 0
     ): Promise<ReadableStream<Uint8Array>> {
+      // A negative start counts back from the current end of the stream.
+      let startIndex = requestedStartIndex;
+      if (startIndex < 0) {
+        const { chunks } = await loadDataChunks(name);
+        startIndex = Math.max(0, chunks.length + startIndex);
+      }
+
       return new ReadableStream<Uint8Array>({
         async start(controller) {
           // Track chunks we've already delivered to prevent duplicates
@@ -382,7 +431,7 @@ export async function createStreamer(config: StreamerConfig = {}): Promise<{
   };
 
   return {
-    streamer,
+    streamer: { streams },
     client,
     close: async () => {
       if (changeStream) {

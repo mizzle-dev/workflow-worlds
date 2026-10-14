@@ -23,25 +23,8 @@
  */
 
 import { createClient, type Client } from '@libsql/client';
-import type {
-  CreateEventParams,
-  CreateEventRequest,
-  Event,
-  EventResult,
-  GetStepParams,
-  GetWorkflowRunParams,
-  ListEventsByCorrelationIdParams,
-  ListEventsParams,
-  ListWorkflowRunStepsParams,
-  ListWorkflowRunsParams,
-  PaginatedResponse,
-  RunCreatedEventRequest,
-  Step,
-  StepWithoutData,
-  World,
-  WorkflowRun,
-  WorkflowRunWithoutData,
-} from '@workflow/world';
+import { globalSingleton } from '@workflow/utils';
+import { mintedSpecVersion, type Storage, type World } from '@workflow/world';
 import { createQueue } from './queue.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
@@ -93,23 +76,27 @@ export interface TursoWorldConfig {
   pollIntervalMs?: number;
 }
 
-// Module-level client cache to reuse connections
-const clientCache = new Map<string, Client>();
-const clientPragmaInit = new Map<string, Promise<void>>();
+// Process-wide client cache, so every copy of this module a bundler produces
+// shares one connection per database.
+const connections = globalSingleton('@workflow-worlds/turso//connections', 1, () => ({
+  clients: new Map<string, Client>(),
+  pragmaInit: new Map<string, Promise<void>>(),
+}));
 
 /**
  * Gets or creates a Turso client for the given URL.
  */
 function getOrCreateClient(url: string, authToken?: string): Client {
   const cacheKey = `${url}:${authToken ?? ''}`;
-  if (!clientCache.has(cacheKey)) {
-    const client = createClient({
+  let client = connections.clients.get(cacheKey);
+  if (!client) {
+    client = createClient({
       url,
       authToken,
     });
-    clientCache.set(cacheKey, client);
+    connections.clients.set(cacheKey, client);
   }
-  return clientCache.get(cacheKey)!;
+  return client;
 }
 
 /**
@@ -125,7 +112,7 @@ async function configureLocalSqlitePragmas(
     return;
   }
 
-  const existing = clientPragmaInit.get(cacheKey);
+  const existing = connections.pragmaInit.get(cacheKey);
   if (existing) {
     await existing;
     return;
@@ -136,7 +123,7 @@ async function configureLocalSqlitePragmas(
     await client.execute('PRAGMA busy_timeout = 5000');
   })();
 
-  clientPragmaInit.set(cacheKey, init);
+  connections.pragmaInit.set(cacheKey, init);
   await init;
 }
 
@@ -214,151 +201,43 @@ export function createWorld(config: TursoWorldConfig = {}): World {
     return initPromise;
   }
 
-  async function getRun(
-    id: string,
-    params: GetWorkflowRunParams & { resolveData: 'none' }
-  ): Promise<WorkflowRunWithoutData>;
-  async function getRun(
-    id: string,
-    params?: GetWorkflowRunParams & { resolveData?: 'all' }
-  ): Promise<WorkflowRun>;
-  async function getRun(
-    id: string,
-    params?: GetWorkflowRunParams
-  ): Promise<WorkflowRun | WorkflowRunWithoutData> {
-    const { storage } = await ensureInitialized();
-    return storage.runs.get(id, params);
-  }
+  const storage = async (): Promise<Storage> => (await ensureInitialized()).storage;
 
-  async function listRuns(
-    params: ListWorkflowRunsParams & { resolveData: 'none' }
-  ): Promise<PaginatedResponse<WorkflowRunWithoutData>>;
-  async function listRuns(
-    params?: ListWorkflowRunsParams & { resolveData?: 'all' }
-  ): Promise<PaginatedResponse<WorkflowRun>>;
-  async function listRuns(
-    params?: ListWorkflowRunsParams
-  ): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>> {
-    const { storage } = await ensureInitialized();
-    return storage.runs.list(params);
-  }
-
-  async function getStep(
-    runId: string | undefined,
-    stepId: string,
-    params: GetStepParams & { resolveData: 'none' }
-  ): Promise<StepWithoutData>;
-  async function getStep(
-    runId: string | undefined,
-    stepId: string,
-    params?: GetStepParams & { resolveData?: 'all' }
-  ): Promise<Step>;
-  async function getStep(
-    runId: string | undefined,
-    stepId: string,
-    params?: GetStepParams
-  ): Promise<Step | StepWithoutData> {
-    const { storage } = await ensureInitialized();
-    return storage.steps.get(runId, stepId, params);
-  }
-
-  async function listSteps(
-    params: ListWorkflowRunStepsParams & { resolveData: 'none' }
-  ): Promise<PaginatedResponse<StepWithoutData>>;
-  async function listSteps(
-    params: ListWorkflowRunStepsParams & { resolveData?: 'all' }
-  ): Promise<PaginatedResponse<Step>>;
-  async function listSteps(
-    params: ListWorkflowRunStepsParams
-  ): Promise<PaginatedResponse<Step | StepWithoutData>> {
-    const { storage } = await ensureInitialized();
-    return storage.steps.list(params);
-  }
-
-  async function createEvent(
-    runId: null,
-    data: RunCreatedEventRequest,
-    params?: CreateEventParams
-  ): Promise<EventResult>;
-  async function createEvent(
-    runId: string,
-    data: CreateEventRequest,
-    params?: CreateEventParams
-  ): Promise<EventResult>;
-  async function createEvent(
-    runId: string | null,
-    data: RunCreatedEventRequest | CreateEventRequest,
-    params?: CreateEventParams
-  ): Promise<EventResult> {
-    const { storage } = await ensureInitialized();
-
-    if (runId === null) {
-      if (data.eventType !== 'run_created') {
-        throw new Error('runId must be a string for non run_created events');
-      }
-      return storage.events.create(null, data as RunCreatedEventRequest, params);
-    }
-
-    return storage.events.create(runId, data as CreateEventRequest, params);
-  }
-
-  async function listEvents(
-    params: ListEventsParams
-  ): Promise<PaginatedResponse<Event>> {
-    const { storage } = await ensureInitialized();
-    return storage.events.list(params);
-  }
-
-  async function listEventsByCorrelationId(
-    params: ListEventsByCorrelationIdParams
-  ): Promise<PaginatedResponse<Event>> {
-    const { storage } = await ensureInitialized();
-    return storage.events.listByCorrelationId(params);
-  }
-
-  // Return a World with lazy initialization
   return {
+    specVersion: mintedSpecVersion(),
+
     // =========================================================================
-    // RUNS
+    // STORAGE
     // =========================================================================
     runs: {
-      get: getRun,
-      list: listRuns,
+      get: (async (id: string, params?: any) =>
+        (await storage()).runs.get(id, params)) as Storage['runs']['get'],
+      list: (async (params?: any) =>
+        (await storage()).runs.list(params)) as Storage['runs']['list'],
     },
 
-    // =========================================================================
-    // STEPS
-    // =========================================================================
     steps: {
-      get: getStep,
-      list: listSteps,
+      get: (async (runId: string, stepId: string, params?: any) =>
+        (await storage()).steps.get(runId, stepId, params)) as Storage['steps']['get'],
+      list: (async (params: any) =>
+        (await storage()).steps.list(params)) as Storage['steps']['list'],
     },
 
-    // =========================================================================
-    // EVENTS
-    // =========================================================================
     events: {
-      create: createEvent,
-      list: listEvents,
-      listByCorrelationId: listEventsByCorrelationId,
+      create: (async (runId: string | null, data: any, params?: any) =>
+        (await storage()).events.create(runId as string, data, params)) as Storage['events']['create'],
+      get: async (runId, eventId, params) =>
+        (await storage()).events.get(runId, eventId, params),
+      list: async (params) => (await storage()).events.list(params),
+      listByCorrelationId: async (params) =>
+        (await storage()).events.listByCorrelationId(params),
     },
 
-    // =========================================================================
-    // HOOKS
-    // =========================================================================
     hooks: {
-      async get(hookId, params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.get(hookId, params);
-      },
-      async getByToken(token, params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.getByToken(token, params);
-      },
-      async list(params) {
-        const { storage } = await ensureInitialized();
-        return storage.hooks.list(params);
-      },
+      get: async (hookId, params) => (await storage()).hooks.get(hookId, params),
+      getByToken: async (token, params) =>
+        (await storage()).hooks.getByToken(token, params),
+      list: async (params) => (await storage()).hooks.list(params),
     },
 
     // =========================================================================
@@ -377,44 +256,49 @@ export function createWorld(config: TursoWorldConfig = {}): World {
     createQueueHandler(prefix, handler) {
       // This needs to return synchronously, so we create the handler immediately
       // but it will initialize on first use
-      let queueHandler: ReturnType<
-        ReturnType<typeof createQueue>['queue']['createQueueHandler']
-      > | null = null;
+      let queueHandler: ((req: Request) => Promise<Response>) | null = null;
 
       return async (req: Request): Promise<Response> => {
         if (!queueHandler) {
           const { queue } = await ensureInitialized();
           queueHandler = queue.createQueueHandler(prefix, handler);
         }
-        const activeHandler = queueHandler;
-        if (!activeHandler) {
-          throw new Error('Queue handler failed to initialize');
-        }
-        return activeHandler(req);
+        return queueHandler(req);
       };
     },
 
     // =========================================================================
     // STREAMER
     // =========================================================================
-    async writeToStream(name, runId, chunk) {
-      const { streamer } = await ensureInitialized();
-      return streamer.writeToStream(name, runId, chunk);
-    },
-
-    async closeStream(name, runId) {
-      const { streamer } = await ensureInitialized();
-      return streamer.closeStream(name, runId);
-    },
-
-    async readFromStream(name, startIndex) {
-      const { streamer } = await ensureInitialized();
-      return streamer.readFromStream(name, startIndex);
-    },
-
-    async listStreamsByRunId(runId) {
-      const { streamer } = await ensureInitialized();
-      return streamer.listStreamsByRunId(runId);
+    streams: {
+      async write(runId, name, chunk) {
+        const { streamer } = await ensureInitialized();
+        return streamer.streams.write(runId, name, chunk);
+      },
+      async writeMulti(runId, name, chunks) {
+        const { streamer } = await ensureInitialized();
+        return streamer.streams.writeMulti!(runId, name, chunks);
+      },
+      async close(runId, name) {
+        const { streamer } = await ensureInitialized();
+        return streamer.streams.close(runId, name);
+      },
+      async get(runId, name, startIndex) {
+        const { streamer } = await ensureInitialized();
+        return streamer.streams.get(runId, name, startIndex);
+      },
+      async list(runId) {
+        const { streamer } = await ensureInitialized();
+        return streamer.streams.list(runId);
+      },
+      async getChunks(runId, name, options) {
+        const { streamer } = await ensureInitialized();
+        return streamer.streams.getChunks(runId, name, options);
+      },
+      async getInfo(runId, name) {
+        const { streamer } = await ensureInitialized();
+        return streamer.streams.getInfo(runId, name);
+      },
     },
 
     // =========================================================================
@@ -428,6 +312,16 @@ export function createWorld(config: TursoWorldConfig = {}): World {
     async start(): Promise<void> {
       const { startQueue } = await ensureInitialized();
       await startQueue();
+    },
+
+    /**
+     * Stops the queue worker. The database client is shared process-wide
+     * and stays open for other World instances.
+     */
+    async close(): Promise<void> {
+      if (!initPromise) return;
+      const { closeQueue } = await initPromise;
+      await closeQueue();
     },
   };
 }

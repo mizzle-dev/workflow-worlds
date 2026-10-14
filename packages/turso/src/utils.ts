@@ -2,6 +2,9 @@
  * Turso World Utility Functions
  */
 
+import { globalSingleton } from '@workflow/utils';
+import { monotonicFactory } from 'ulid';
+
 // =============================================================================
 // Debug Logging
 // =============================================================================
@@ -50,3 +53,54 @@ function createDebugLogger(namespace: string) {
  * Enable with WORKFLOW_DEBUG=turso or WORKFLOW_DEBUG=1
  */
 export const debug = createDebugLogger('turso-world');
+
+// =============================================================================
+// Queue Message Encoding
+// =============================================================================
+
+/**
+ * Queue messages are JSON, at rest and on the HTTP hop to the handler, with
+ * `Uint8Array` values (a step dispatch carries its input as one) encoded as
+ * `{ __type: 'Uint8Array', data: '<base64>' }`. Plain JSON would turn them
+ * into objects of numbered keys. This is the same encoding the Local World's
+ * queue uses.
+ */
+export function stringifyQueueMessage(message: unknown): string {
+  return JSON.stringify(message, (_key, value: unknown) =>
+    value instanceof Uint8Array
+      ? { __type: 'Uint8Array', data: Buffer.from(value).toString('base64') }
+      : value
+  );
+}
+
+export function parseQueueMessage(text: string): unknown {
+  return JSON.parse(text, (_key, value: unknown) => {
+    if (
+      value !== null &&
+      typeof value === 'object' &&
+      (value as { __type?: unknown }).__type === 'Uint8Array' &&
+      typeof (value as { data?: unknown }).data === 'string'
+    ) {
+      return new Uint8Array(Buffer.from((value as { data: string }).data, 'base64'));
+    }
+    return value;
+  });
+}
+
+// =============================================================================
+// ID Generation
+// =============================================================================
+
+/**
+ * One monotonic ULID factory per process, shared by every copy of this module
+ * a bundler produces. Stream chunks are ordered by their ID, so two copies
+ * with their own factories could order chunks written in the same
+ * millisecond by chance.
+ */
+const ids = globalSingleton('@workflow-worlds/turso//ulid', 1, () => ({
+  next: monotonicFactory(),
+}));
+
+export function generateUlid(): string {
+  return ids.next();
+}

@@ -29,8 +29,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@workflow/errors": "4.1.0-beta.14",
-    "@workflow/world": "4.1.0-beta.2"
+    "@workflow/errors": "5.0.4",
+    "@workflow/world": "5.0.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

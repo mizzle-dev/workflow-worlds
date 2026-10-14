@@ -6,12 +6,15 @@
  * - Pub/Sub for real-time notifications to multiple consumers
  */
 
-import type { Streamer } from '@workflow/world';
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  StreamInfoResponse,
+  Streamer,
+} from '@workflow/world';
 import type { Redis } from 'ioredis';
-import { monotonicFactory } from 'ulid';
-import { debug } from './utils.js';
+import { debug, generateUlid } from './utils.js';
 
-const generateUlid = monotonicFactory();
 
 /**
  * Configuration for the streamer.
@@ -52,60 +55,79 @@ export async function createStreamer(options: {
     runStreams: (runId: string) => `${prefix}:stream:runs:${runId}`,
   };
 
-  const streamer: Streamer = {
-    /**
-     * Writes a chunk of data to a named stream.
-     */
-    async writeToStream(
-      name: string,
-      runId: string | Promise<string>,
-      chunk: string | Uint8Array
-    ): Promise<void> {
-      // Await runId if it's a promise (ensures proper ordering)
-      const resolvedRunId = await runId;
-      await redis.sadd(keys.runStreams(resolvedRunId), name);
+  function toBuffer(chunk: string | Uint8Array): Buffer {
+    return typeof chunk === 'string' ? Buffer.from(chunk, 'utf-8') : Buffer.from(chunk);
+  }
 
-      const chunkId = `chnk_${generateUlid()}`;
-
-      // Convert to Buffer for Redis
-      let data: Buffer;
-      if (typeof chunk === 'string') {
-        data = Buffer.from(chunk, 'utf-8');
-      } else {
-        data = Buffer.from(chunk);
-      }
-
+  async function appendChunks(name: string, chunks: Buffer[]): Promise<void> {
+    if (chunks.length === 0) return;
+    const pipeline = redis.pipeline();
+    const chunkIds = chunks.map(() => `chnk_${generateUlid()}`);
+    chunks.forEach((data, i) => {
       // Add to Redis Stream with MAXLEN to prevent unbounded growth
-      await redis.xadd(
+      pipeline.xadd(
         keys.stream(name),
         'MAXLEN',
         '~',
         streamMaxLen,
         '*', // Auto-generate stream ID
         'chunkId',
-        chunkId,
+        chunkIds[i],
         'data',
         data.toString('base64'),
         'eof',
         'false'
       );
-
+    });
+    for (const chunkId of chunkIds) {
       // Publish notification via Pub/Sub
-      await redis.publish(
-        keys.channel(name),
-        JSON.stringify({ type: 'chunk', chunkId })
-      );
+      pipeline.publish(keys.channel(name), JSON.stringify({ type: 'chunk', chunkId }));
+    }
+    await pipeline.exec();
+  }
+
+  /** Data chunks up to the first EOF marker, in order. */
+  async function loadDataChunks(name: string): Promise<{ chunks: Buffer[]; done: boolean }> {
+    const entries = await redis.xrange(keys.stream(name), '-', '+');
+    const chunks: Buffer[] = [];
+    for (const [, fields] of entries) {
+      const fieldMap = new Map<string, string>();
+      for (let i = 0; i < fields.length; i += 2) {
+        fieldMap.set(fields[i], fields[i + 1]);
+      }
+      if (fieldMap.get('eof') === 'true') return { chunks, done: true };
+      chunks.push(Buffer.from(fieldMap.get('data') ?? '', 'base64'));
+    }
+    return { chunks, done: false };
+  }
+
+  const streams: Streamer['streams'] = {
+    /**
+     * Writes a chunk of data to a named stream.
+     */
+    async write(runId: string, name: string, chunk: string | Uint8Array): Promise<void> {
+      // Await runId if it's a promise (ensures proper ordering)
+      await redis.sadd(keys.runStreams(await runId), name);
+      await appendChunks(name, [toBuffer(chunk)]);
+    },
+
+    /**
+     * Writes several chunks to a named stream in one round trip.
+     */
+    async writeMulti(
+      runId: string,
+      name: string,
+      chunks: (string | Uint8Array)[]
+    ): Promise<void> {
+      await redis.sadd(keys.runStreams(await runId), name);
+      await appendChunks(name, chunks.map(toBuffer));
     },
 
     /**
      * Signals the end of a stream.
      */
-    async closeStream(
-      name: string,
-      runId: string | Promise<string>
-    ): Promise<void> {
-      const resolvedRunId = await runId;
-      await redis.sadd(keys.runStreams(resolvedRunId), name);
+    async close(runId: string, name: string): Promise<void> {
+      await redis.sadd(keys.runStreams(await runId), name);
 
       const chunkId = `chnk_${generateUlid()}`;
 
@@ -131,17 +153,48 @@ export async function createStreamer(options: {
       );
     },
 
-    async listStreamsByRunId(runId: string): Promise<string[]> {
+    async list(runId: string): Promise<string[]> {
       return redis.smembers(keys.runStreams(runId));
+    },
+
+    async getChunks(
+      _runId: string,
+      name: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse> {
+      const limit = options?.limit ?? 100;
+      const start = options?.cursor ? Number.parseInt(options.cursor, 10) || 0 : 0;
+      const { chunks, done } = await loadDataChunks(name);
+      const page = chunks.slice(start, start + limit);
+      const hasMore = start + page.length < chunks.length;
+      return {
+        data: page.map((data, i) => ({ index: start + i, data: new Uint8Array(data) })),
+        cursor: hasMore ? String(start + page.length) : null,
+        hasMore,
+        done,
+      };
+    },
+
+    async getInfo(_runId: string, name: string): Promise<StreamInfoResponse> {
+      const { chunks, done } = await loadDataChunks(name);
+      return { tailIndex: chunks.length - 1, done };
     },
 
     /**
      * Returns a ReadableStream for consuming stream data.
      */
-    async readFromStream(
+    async get(
+      _runId: string,
       name: string,
-      startIndex = 0
+      requestedStartIndex = 0
     ): Promise<ReadableStream<Uint8Array>> {
+      // A negative start counts back from the current end of the stream.
+      let startIndex = requestedStartIndex;
+      if (startIndex < 0) {
+        const { chunks } = await loadDataChunks(name);
+        startIndex = Math.max(0, chunks.length + startIndex);
+      }
+
       // Track cleanup state for this specific stream reader
       let streamCleanup: (() => void) | null = null;
 
@@ -400,5 +453,5 @@ export async function createStreamer(options: {
     await subscriber.quit();
   }
 
-  return { streamer, close };
+  return { streamer: { streams }, close };
 }

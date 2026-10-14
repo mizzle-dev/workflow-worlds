@@ -9,17 +9,34 @@
  * - Graceful shutdown
  */
 
-import { Queue, Worker, Job, type ConnectionOptions, type JobsOptions } from 'bullmq';
-import type {
-  Queue as WorkflowQueue,
-  MessageId,
-  ValidQueueName,
-  QueuePrefix,
+import {
+  DelayedError,
+  Queue,
+  Worker,
+  Job,
+  type ConnectionOptions,
+  type JobsOptions,
+} from 'bullmq';
+import {
+  WORKFLOW_FLOW_ROUTE,
+  type MessageId,
+  type Queue as WorkflowQueue,
+  type QueueOptions,
+  type QueuePayload,
+  type QueuePrefix,
+  type ValidQueueName,
 } from '@workflow/world';
-import { monotonicFactory } from 'ulid';
-import { debug } from './utils.js';
+import { debug, parseQueueMessage, stringifyQueueMessage, generateUlid } from './utils.js';
 
-const generateUlid = monotonicFactory();
+/**
+ * A job carries its message pre-encoded: BullMQ stores job data as plain
+ * JSON, which would turn a step dispatch's `Uint8Array` input into an object
+ * of numbered keys.
+ */
+interface JobData {
+  payload: string;
+}
+
 
 /**
  * Configuration for the queue.
@@ -101,28 +118,17 @@ export async function createQueue(options: {
     },
   });
 
-  const stepQueue = new Queue('__wkf_step', {
-    connection,
-    defaultJobOptions: {
-      attempts: maxRetries,
-      backoff: { type: 'exponential', delay: 1000 },
-      removeOnComplete: true,
-      removeOnFail: 1000,
-    },
-  });
-
   // Track workers for shutdown
   let workflowWorker: Worker | null = null;
-  let stepWorker: Worker | null = null;
   let isStarted = false;
 
   /**
    * Creates a worker processor function for a given queue type.
    */
-  function createProcessor(pathname: 'flow' | 'step') {
-    return async (job: Job) => {
+  function createProcessor() {
+    return async (job: Job<JobData>, token?: string) => {
       const baseUrl = getBaseUrl(config.baseUrl);
-      const url = `${baseUrl}/.well-known/workflow/v1/${pathname}`;
+      const url = `${baseUrl}${WORKFLOW_FLOW_ROUTE}`;
 
       try {
         const response = await fetch(url, {
@@ -133,7 +139,7 @@ export async function createQueue(options: {
             'x-vqs-message-id': job.id ?? generateUlid(),
             'x-vqs-message-attempt': String(job.attemptsMade + 1),
           },
-          body: JSON.stringify(job.data),
+          body: job.data.payload,
           signal: AbortSignal.timeout(httpTimeoutMs),
         });
 
@@ -147,13 +153,16 @@ export async function createQueue(options: {
         if (response.status === 503) {
           try {
             const parsed = JSON.parse(text);
-            if (typeof parsed.timeoutSeconds === 'number') {
-              // Move job to delayed state without counting as failed attempt
+            if (typeof parsed.timeoutSeconds === 'number' && parsed.timeoutSeconds >= 0) {
+              // Move job to delayed state without counting as failed attempt.
+              // BullMQ requires DelayedError after moveToDelayed, so the worker
+              // leaves the job delayed instead of completing it.
               const delayMs = parsed.timeoutSeconds * 1000;
-              await job.moveToDelayed(Date.now() + delayMs, job.token);
-              return;
+              await job.moveToDelayed(Date.now() + delayMs, token);
+              throw new DelayedError();
             }
-          } catch {
+          } catch (err) {
+            if (err instanceof DelayedError) throw err;
             // Not a valid retry response, fall through to error
           }
         }
@@ -161,7 +170,9 @@ export async function createQueue(options: {
         // Non-retriable error
         throw new Error(`HTTP ${response.status}: ${text}`);
       } catch (err) {
-        debug(`Job ${job.id} failed:`, err);
+        if (!(err instanceof DelayedError)) {
+          debug(`Job ${job.id} failed:`, err);
+        }
         throw err;
       }
     };
@@ -180,17 +191,17 @@ export async function createQueue(options: {
      */
     async queue(
       queueName: ValidQueueName,
-      message: unknown,
-      opts?: { deploymentId?: string; idempotencyKey?: string }
+      message: QueuePayload,
+      opts?: QueueOptions
     ): Promise<{ messageId: MessageId }> {
       const messageId = `msg_${generateUlid()}` as MessageId;
 
-      // Determine which queue to use based on queue name
-      const targetQueue = queueName.startsWith('__wkf_step_')
-        ? stepQueue
-        : workflowQueue;
-
       const jobOptions: JobsOptions = {};
+
+      // A wait continuation is an ordinary message delivered after a delay.
+      if (opts?.delaySeconds && opts.delaySeconds > 0) {
+        jobOptions.delay = opts.delaySeconds * 1000;
+      }
 
       // Use BullMQ's native deduplication with TTL (Throttle mode)
       if (opts?.idempotencyKey) {
@@ -201,7 +212,7 @@ export async function createQueue(options: {
       }
 
       try {
-        const job = await targetQueue.add(queueName, message, {
+        const job = await workflowQueue.add(queueName, { payload: stringifyQueueMessage(message) }, {
           ...jobOptions,
           jobId: messageId,
         });
@@ -222,7 +233,7 @@ export async function createQueue(options: {
       handler: (
         message: unknown,
         meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }
-      ) => Promise<void | { timeoutSeconds: number }>
+      ) => Promise<unknown>
     ): (req: Request) => Promise<Response> {
       return async (req: Request): Promise<Response> => {
         // Parse headers
@@ -246,13 +257,15 @@ export async function createQueue(options: {
 
         try {
           // Parse the message body
-          const body = await req.json();
+          const body = parseQueueMessage(await req.text());
 
           // Call the actual handler
-          const result = await handler(body, { attempt, queueName, messageId });
+          const result = (await handler(body, { attempt, queueName, messageId })) as
+            | { timeoutSeconds?: unknown }
+            | undefined;
 
-          // Check if handler requests a retry
-          if (result?.timeoutSeconds) {
+          // The handler asks for a redelivery after a delay (0 is "now").
+          if (typeof result?.timeoutSeconds === 'number' && result.timeoutSeconds >= 0) {
             return Response.json(
               { timeoutSeconds: result.timeoutSeconds },
               { status: 503 }
@@ -278,13 +291,9 @@ export async function createQueue(options: {
 
     debug('Starting queue workers...');
 
-    // Create workers for both queue types
-    workflowWorker = new Worker('__wkf_workflow', createProcessor('flow'), {
-      connection,
-      concurrency,
-    });
-
-    stepWorker = new Worker('__wkf_step', createProcessor('step'), {
+    // Workflow runs and queued steps share one queue: both are delivered to
+    // the flow route, which tells them apart by the payload.
+    workflowWorker = new Worker('__wkf_workflow', createProcessor(), {
       connection,
       concurrency,
     });
@@ -294,15 +303,8 @@ export async function createQueue(options: {
       debug('Workflow worker error:', err);
     });
 
-    stepWorker.on('error', (err) => {
-      debug('Step worker error:', err);
-    });
-
-    // Wait for workers to be ready
-    await Promise.all([
-      workflowWorker.waitUntilReady(),
-      stepWorker.waitUntilReady(),
-    ]);
+    // Wait for the worker to be ready
+    await workflowWorker.waitUntilReady();
 
     isStarted = true;
     debug('Queue workers started');
@@ -315,16 +317,10 @@ export async function createQueue(options: {
     debug('Closing queue workers...');
 
     // Close workers first (gracefully waits for in-progress jobs)
-    await Promise.all([
-      workflowWorker?.close(),
-      stepWorker?.close(),
-    ]);
+    await workflowWorker?.close();
 
-    // Then close queues
-    await Promise.all([
-      workflowQueue.close(),
-      stepQueue.close(),
-    ]);
+    // Then close the queue
+    await workflowQueue.close();
 
     isStarted = false;
     debug('Queue workers closed');

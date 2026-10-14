@@ -32,8 +32,9 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@workflow/errors": "4.1.0-beta.14",
-    "@workflow/world": "4.1.0-beta.2",
+    "@workflow/errors": "5.0.4",
+    "@workflow/utils": "5.0.2",
+    "@workflow/world": "5.0.4",
     "bullmq": "^5.34.0",
     "cbor-x": "1.6.0",
     "ioredis": "^5.4.2",
@@ -42,7 +43,7 @@
   "devDependencies": {
     "@testcontainers/redis": "^10.18.0",
     "@types/node": "^22.0.0",
-    "@workflow/world-testing": "4.1.0-beta.54",
+    "@workflow/world-testing": "5.0.5",
     "@workflow-worlds/testing": "workspace:*",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

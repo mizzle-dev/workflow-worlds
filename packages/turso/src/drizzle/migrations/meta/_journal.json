@@ -22,6 +22,13 @@
       "when": 1770600000000,
       "tag": "0002_add_step_retry_after",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1792018111923,
+      "tag": "0003_v5_slot_identity",
+      "breakpoints": true
     }
   ]
 }
